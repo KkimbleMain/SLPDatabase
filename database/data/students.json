@@ -1,0 +1,20 @@
+[
+    {
+        "id": 1,
+        "student_id": "SS1762",
+        "first_name": "Student",
+        "last_name": "subject1",
+        "grade": "1",
+        "date_of_birth": "2019-06-24",
+        "gender": "female",
+        "primary_language": "English",
+        "service_frequency": "1hr weekly",
+        "teacher": "reed",
+        "assigned_therapist_name": "Jane Smith",
+        "assigned_therapist": 2,
+        "parent_contact": "Mr. Subject1",
+        "medical_info": "NA",
+        "created_at": "2025-08-24 22:50:04",
+        "updated_at": "2025-08-24 22:55:39"
+    }
+]

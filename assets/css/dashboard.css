@@ -1,0 +1,209 @@
+/* Dashboard specific styles */
+.dashboard-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 1.25rem;
+    margin-bottom: 1.5rem;
+}
+
+.stats-card {
+    background: var(--card-bg);
+    padding: 1rem 1rem;
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow);
+    text-align: center;
+    border-left: 6px solid #2c5aa0;
+    transition: transform 0.16s ease, box-shadow 0.16s ease;
+}
+
+.stats-card h3 {
+    color: var(--dark-gray);
+    font-size: 0.9rem;
+    margin-bottom: 0.5rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.stat-number {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--primary-600);
+    margin-bottom: 0.25rem;
+}
+
+/* larger, centered icon inside the stat card */
+.stats-card .stat-icon {
+    width: 40px;
+    height: 40px;
+    background: none;
+    color: var(--card-bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 12px;
+    font-size: 40px;
+}
+
+.recent-activity {
+    background: var(--card-bg);
+    padding: 1.25rem;
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow);
+    margin-bottom: 1rem;
+}
+
+.recent-activity h2 {
+    color: var(--primary-color);
+    margin-bottom: 1rem;
+    border-bottom: 2px solid var(--light-gray);
+    padding-bottom: 0.5rem;
+}
+
+.activity-item {
+    display: flex;
+    align-items: center;
+    padding: 0.8rem 0.6rem;
+    border-bottom: 1px solid var(--light-gray);
+    transition: background 0.12s ease;
+}
+
+.activity-item:hover {
+    background: #fbfcfd;
+}
+
+.activity-item:last-child {
+    border-bottom: none;
+}
+
+.activity-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: #f8f9fa;
+    border: 1px solid var(--border-color);
+    color: var(--text-color);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-right: 0.75rem;
+    font-size: 1rem;
+}
+
+.activity-content {
+    flex: 1;
+}
+
+.activity-title {
+    font-weight: 500;
+    margin-bottom: 0.25rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.activity-date {
+    color: var(--muted);
+    font-size: 0.85rem;
+    font-weight: normal;
+}
+
+.activity-description {
+    color: var(--dark-gray);
+    font-size: 0.9rem;
+}
+
+.activity-time {
+    color: var(--dark-gray);
+    font-size: 0.85rem;
+}
+
+.quick-actions {
+    background: var(--card-bg);
+    padding: 1rem 1.25rem;
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow);
+}
+
+.quick-actions h2 {
+    color: var(--primary-600);
+    margin-bottom: 0.75rem;
+    border-bottom: 1px dashed var(--light-gray);
+    padding-bottom: 0.5rem;
+}
+
+.quick-actions .btn {
+    margin-right: 1rem;
+    margin-bottom: 0.5rem;
+}
+
+/* Make the quick-action anchor cards look like visual buttons/cards */
+.action-card {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: linear-gradient(180deg, #fff, #fbfdff);
+    border: 1px solid var(--border-color);
+    color: var(--text-color);
+    text-decoration: none;
+    box-shadow: var(--shadow);
+}
+
+/* Make quick-action anchor cards lift on hover and never show underline */
+.action-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 8px 18px rgba(36,74,136,0.12);
+    text-decoration: none;
+}
+
+.action-card h3 {
+    margin: 0;
+    font-size: 1rem;
+}
+
+.action-card p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.92rem;
+}
+
+.dashboard-welcome {
+    background: linear-gradient(135deg, var(--primary-color), #3d6db0);
+    color: white;
+    padding: 2rem;
+    border-radius: var(--border-radius);
+    margin-bottom: 2rem;
+    text-align: center;
+}
+
+.dashboard-welcome h1 {
+    margin-bottom: 0.5rem;
+}
+
+.dashboard-welcome p {
+    opacity: 0.9;
+    font-size: 1.1rem;
+}
+
+@media (max-width: 768px) {
+    .dashboard-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .quick-actions .btn {
+        display: block;
+        margin: 0.5rem 0;
+        width: 100%;
+    }
+    
+    .activity-item {
+        flex-direction: column;
+        text-align: center;
+    }
+    
+    .activity-icon {
+        margin-right: 0;
+        margin-bottom: 0.5rem;
+    }
+}
