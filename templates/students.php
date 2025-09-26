@@ -1,30 +1,31 @@
 <?php
 // templates/students.php
-// This template now reads students directly from the JSON datastore to ensure
-// the UI reflects the authoritative `database/data/students.json` file only.
+// This template reads students from the canonical datastore (SQLite when available).
 
 require_once __DIR__ . '/../includes/config.php';
 require_once __DIR__ . '/../includes/auth.php';
+// use the new sqlite helper instead of JSON
+require_once __DIR__ . '/../includes/sqlite.php';
 
 // Determine current user context
 $currentUser = getCurrentUser();
 $currentUserId = $currentUser['id'] ?? ($_SESSION['user_id'] ?? null);
 $isAdmin = isset($currentUser['role']) && $currentUser['role'] === 'admin';
 
-// Load students from the canonical JSON file
-$all_students = loadJsonData('students') ?: [];
-
-// Only use students that exist in students.json. If the user is not an admin,
-// filter to students assigned to the current user; otherwise show all.
-$user_students = [];
-foreach ($all_students as $s) {
-	if (!is_array($s)) continue;
-	if (!empty($s['archived'])) continue; // skip archived
-	if ($isAdmin) { $user_students[] = $s; continue; }
-	// assigned_therapist may be numeric id; allow fallback to null
-	if (isset($s['assigned_therapist']) && (string)$s['assigned_therapist'] === (string)$currentUserId) {
-		$user_students[] = $s;
-	}
+// Load students from SQLite instead of students.json
+try {
+    $pdo = get_db();
+    if ($isAdmin) {
+        $stmt = $pdo->query('SELECT * FROM students ORDER BY last_name, first_name');
+        $user_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } else {
+        $stmt = $pdo->prepare('SELECT * FROM students WHERE assigned_therapist = :uid OR assigned_therapist IS NULL ORDER BY last_name, first_name');
+        $stmt->execute([':uid' => $currentUserId]);
+        $user_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+} catch (Exception $e) {
+    // fallback to empty array so template still renders
+    $user_students = [];
 }
 
 // Check if we're viewing a profile
@@ -42,26 +43,24 @@ if ($action === 'profile' && $profileStudentId) {
 	}
 
 	if ($profileStudent) {
-		// Load student's profile/forms from their folder (forms are stored per-student)
-		$studentFolder = __DIR__ . '/../database/data/students/student_' . $profileStudentId;
+		// Load student's forms from the documents table (DB-backed)
 		$studentForms = [];
-
-		if (is_dir($studentFolder)) {
-			$files = glob($studentFolder . '/*.json');
-			foreach ($files as $file) {
-				$content = file_get_contents($file);
-				if ($content !== false) {
-					$formData = json_decode($content, true);
-					if ($formData) {
-						$studentForms[] = $formData;
-					}
+		try {
+			$pdo = get_db();
+			$stmt = $pdo->prepare('SELECT id, title, filename, metadata, content, created_at FROM documents WHERE student_id = :sid ORDER BY created_at DESC');
+			$stmt->execute([':sid' => $profileStudentId]);
+			$rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+			foreach ($rows as $r) {
+				if (!empty($r['content'])) {
+					$json = json_decode($r['content'], true);
+					if ($json) { $studentForms[] = $json; continue; }
 				}
+				// fallback: try decode metadata/title
+				$studentForms[] = ['id' => $r['id'], 'title' => $r['title'], 'created_at' => $r['created_at']];
 			}
-
-			// Sort by creation date (newest first)
-			usort($studentForms, function($a, $b) {
-				return strtotime($b['created_at']) - strtotime($a['created_at']);
-			});
+		} catch (Exception $e) {
+			// fallback to empty forms
+			$studentForms = [];
 		}
 
 		// Display profile view
@@ -151,12 +150,11 @@ ksort($students_by_grade, SORT_NATURAL);
 										<div class="avatar-circle"><?php echo strtoupper(substr($student['first_name'], 0, 1) . substr($student['last_name'], 0, 1)); ?></div>
 										<div class="student-basic">
 											<div class="student-name"><?php echo htmlspecialchars($student['first_name'] . ' ' . $student['last_name']); ?></div>
-											<div class="student-meta">
-												<?php if (!empty($student['student_id'])): ?>
-														<span class="student-id">ID: <span class="id-value"><?php echo htmlspecialchars($student['student_id']); ?></span> • </span>
-													<?php endif; ?>
-												<?php echo $student_goals; ?> goals • <?php echo $student_reports; ?> reports
-											</div>
+                                            <div class="student-meta">
+                                                <span class="student-id">ID: <span class="id-value"><?php echo htmlspecialchars($student['student_id'] ?? $student['id']); ?></span></span>
+                                                <span class="meta-sep">•</span>
+                                                <?php echo $student_goals; ?> goals • <?php echo $student_reports; ?> reports
+                                            </div>
 										</div>
 									</div>
 									<div class="expand-indicator">

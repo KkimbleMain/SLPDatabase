@@ -1,11 +1,13 @@
 <?php
-// Shared modal templates
-// ensure helper functions are available
-if (!function_exists('loadJsonData')) {
-    require_once __DIR__ . '/../includes/config.php';
+require_once __DIR__ . '/../includes/sqlite.php';
+try {
+    $pdo = get_db();
+    $all_students = $pdo->query('SELECT id, student_id, first_name, last_name FROM students ORDER BY last_name, first_name')->fetchAll(PDO::FETCH_ASSOC);
+    $all_users = $pdo->query('SELECT id, username, first_name, last_name FROM users ORDER BY first_name, last_name')->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) {
+    $all_students = [];
+    $all_users = [];
 }
-$all_students = loadJsonData('students') ?: [];
-$all_users = loadJsonData('users') ?: [];
 ?>
 <template id="tmpl-add-student">
     <div id="studentModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="studentModalTitle">

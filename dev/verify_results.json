@@ -1,0 +1,60 @@
+{
+    "before": {
+        "initial_evaluations": 3,
+        "session_reports": 3,
+        "discharge_reports": 3,
+        "documents": 4
+    },
+    "insert_initial_id": "4",
+    "insert_session_id": "4",
+    "insert_discharge_id": "4",
+    "after": {
+        "initial_evaluations": 4,
+        "session_reports": 4,
+        "discharge_reports": 4,
+        "documents": 4
+    },
+    "sample": {
+        "initial_evaluations": {
+            "id": 4,
+            "student_id": 1,
+            "title": "Direct Initial Test",
+            "therapist_id": 1,
+            "metadata": "{\"form_type\":\"initial_evaluation\"}",
+            "content": "{\"test\":true}",
+            "created_at": "2025-09-06T14:24:32+00:00"
+        },
+        "session_reports": {
+            "id": 4,
+            "student_id": 1,
+            "session_date": "2025-09-06",
+            "duration_minutes": 30,
+            "session_type": "individual",
+            "title": "Direct Session Test",
+            "therapist_id": 1,
+            "metadata": "{\"form_type\":\"session_report\"}",
+            "content": "{\"test\":true}",
+            "created_at": "2025-09-06T14:24:32+00:00"
+        },
+        "discharge_reports": {
+            "id": 4,
+            "student_id": 1,
+            "title": "Direct Discharge Test",
+            "therapist_id": 1,
+            "metadata": "{\"form_type\":\"discharge_report\"}",
+            "content": "{\"test\":true}",
+            "created_at": "2025-09-06T14:24:32+00:00"
+        },
+        "documents": {
+            "id": 4,
+            "student_id": 4,
+            "title": "Unit Test Document",
+            "filename": null,
+            "metadata": "{\"form_type\":\"unit_test\"}",
+            "created_at": "2025-09-06T14:17:56+00:00",
+            "content": "{\"id\":1757168276,\"student_id\":4,\"form_type\":\"unit_test\",\"form_data\":{\"foo\":\"bar\"},\"title\":\"Unit Test Document\",\"therapist_id\":null,\"created_at\":\"2025-09-06T14:17:56+00:00\"}",
+            "form_type": "unit_test",
+            "therapist_id": null
+        }
+    }
+}

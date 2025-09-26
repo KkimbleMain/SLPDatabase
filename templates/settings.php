@@ -2,23 +2,34 @@
 // templates/settings.php
 // Comprehensive settings UI with profile, data management, archived students, and system preferences
 
+require_once __DIR__ . '/../includes/config.php';
+require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . '/../includes/sqlite.php';
+
 // Load canonical students and compute archived count from the JSON store
-$all_students = loadJsonData('students') ?: [];
-$archivedCount = 0;
-foreach ($all_students as $student) {
-	if (!empty($student['archived'])) $archivedCount++;
+try {
+    $pdo = get_db();
+    $all_students = $pdo->query('SELECT id, student_id, first_name, last_name, archived FROM students ORDER BY last_name, first_name')->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) {
+    $all_students = [];
 }
 
-// Compute total document count only for students present in students.json
+// Get archived count from DB (fallback to 0 on error)
+$archivedCount = 0;
+try {
+    $pdo = get_db();
+    $archivedCount = (int)$pdo->query('SELECT COUNT(*) FROM students WHERE archived = 1')->fetchColumn();
+} catch (Exception $e) {
+    $archivedCount = 0;
+}
+
+// Compute total document count from DB
 $totalDocs = 0;
-foreach ($all_students as $student) {
-	$sid = (int)($student['id'] ?? 0);
-	if (!$sid) continue;
-	$folder = __DIR__ . '/../database/data/students/student_' . $sid;
-	if (is_dir($folder)) {
-		$files = glob($folder . '/*.json');
-		$totalDocs += count($files);
-	}
+try {
+	$pdo = get_db();
+	$totalDocs = (int)$pdo->query('SELECT COUNT(*) FROM documents')->fetchColumn();
+} catch (Exception $e) {
+	$totalDocs = 0;
 }
 ?>
 <div class="container">
@@ -95,17 +106,13 @@ foreach ($all_students as $student) {
 			<div class="setting-item">
 				<div class="setting-info">
 					<label>Archived Count</label>
-					<span class="setting-value"><?php echo $archivedCount; ?> students</span>
+					<!-- added id so JS can update this value dynamically -->
+					<span id="archivedCountValue" class="setting-value"><?php echo $archivedCount; ?> students</span>
 				</div>
-				<button class="btn btn-secondary" onclick="viewArchivedStudents()" <?php echo $archivedCount === 0 ? 'disabled' : ''; ?>>View Archived</button>
+				<!-- remove inline onclick; JS will wire this -->
+				<button id="viewArchivedStudentsBtn" data-action="view-archived-students" class="btn btn-secondary" <?php echo $archivedCount === 0 ? 'disabled' : ''; ?> onclick="viewArchivedStudents()">View Archived</button>
 			</div>
-			<div class="setting-item">
-				<div class="setting-info">
-					<label>Recovery Options</label>
-					<span class="setting-value">Restore archived students</span>
-				</div>
-				<button class="btn btn-outline" onclick="showArchiveRecovery()" <?php echo $archivedCount === 0 ? 'disabled' : ''; ?>>Recover Students</button>
-			</div>
+			<!-- Recover button removed — use "View Archived" to manage restores -->
 		</div>
 
 		<!-- System Preferences -->

@@ -19,8 +19,23 @@ document.addEventListener('DOMContentLoaded', async function() {
 
 async function loadStudents() {
     try {
-    const response = await fetch('/api/students.php');
-        allStudents = await response.json();
+        const fd = new URLSearchParams();
+        fd.append('action', 'get_students');
+        // optional: restrict to non-archived only
+        fd.append('archived', '0');
+
+        const res = await fetch('/includes/submit.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: fd.toString()
+        });
+
+        const result = await res.json();
+        if (result && result.success && Array.isArray(result.students)) {
+            allStudents = result.students;
+        } else {
+            allStudents = [];
+        }
         populateStudentSelect();
     } catch (error) {
         console.error('Error loading students:', error);

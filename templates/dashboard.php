@@ -1,6 +1,36 @@
 <?php
 // templates/dashboard.php
-// Assumes $user_data, $total_students, $total_goals, $recent_sessions, $recent_updates are defined by the caller
+// Ensure summary values are available by querying DB if caller didn't set them
+require_once __DIR__ . '/../includes/sqlite.php';
+try {
+    $pdo = get_db();
+
+    if (!isset($total_students)) {
+        $total_students = (int)$pdo->query('SELECT COUNT(*) FROM students WHERE archived = 0')->fetchColumn();
+    }
+    if (!isset($total_goals)) {
+        $total_goals = (int)$pdo->query('SELECT COUNT(*) FROM goals')->fetchColumn();
+    }
+    if (!isset($recent_sessions)) {
+        $recent_sessions = (int)$pdo->query('SELECT COUNT(*) FROM reports')->fetchColumn();
+    }
+    if (!isset($recent_updates)) {
+        // pull some recent progress/update count or sample
+        $recent_updates = (int)$pdo->query('SELECT COUNT(*) FROM progress_updates WHERE created_at >= datetime("now","-30 days")')->fetchColumn();
+    }
+    if (!isset($user_data) && isset($_SESSION['user_id'])) {
+        $stmt = $pdo->prepare('SELECT * FROM users WHERE id = :id LIMIT 1');
+        $stmt->execute([':id' => $_SESSION['user_id']]);
+        $user_data = $stmt->fetch(PDO::FETCH_ASSOC) ?: ['first_name' => 'User'];
+    }
+} catch (Exception $e) {
+    // fall back to zeros on error
+    $total_students = $total_students ?? 0;
+    $total_goals = $total_goals ?? 0;
+    $recent_sessions = $recent_sessions ?? 0;
+    $recent_updates = $recent_updates ?? 0;
+    $user_data = $user_data ?? ['first_name' => 'User'];
+}
 ?>
 
 <div class="container">

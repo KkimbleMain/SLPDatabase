@@ -1,6 +1,17 @@
 // Page module: students
 import { apiFetch } from '../api.js';
 import { showNotification, closeModal, insertModal, addStudentToSelects } from '../ui.js';
+export function showAddStudentModal(preselectId) {
+    const tpl = document.getElementById('tmpl-add-student');
+    if (!tpl) return;
+    const clone = tpl.content.cloneNode(true);
+
+    // ensure unique ids in the cloned template to avoid collisions
+    clone.querySelectorAll('[id]').forEach(el => {
+        const oldId = el.id;
+        const newId = oldId + '-' + Math.floor(Math.random() * 100000);
+        el.id = newId;
+        // update labels that referenced the old id
         clone.querySelectorAll(`label[for="${oldId}"]`).forEach(lbl => lbl.setAttribute('for', newId));
         // update aria-labelledby that reference the old id
         clone.querySelectorAll(`[aria-labelledby="${oldId}"]`).forEach(a => a.setAttribute('aria-labelledby', newId));
@@ -17,204 +28,37 @@ import { showNotification, closeModal, insertModal, addStudentToSelects } from '
     // Insert modal via central helper which attaches close handlers and backdrop
     insertModal(clone);
 
-    // ensure date-of-birth cannot be set to today or a future date (set max = yesterday)
-    const rootAfterInsert = document.getElementById(modalId) || clone;
-    const dobInput = rootAfterInsert.querySelector('input[name="date_of_birth"]');
+    // ensure date-of-birth cannot be set to today or a future date
+    const modalRoot = document.querySelector('.modal') || clone;
+    const dobInput = modalRoot.querySelector('input[name="date_of_birth"]');
     if (dobInput) {
-        // Force the input to be text + readOnly to suppress native date pickers
         try { dobInput.type = 'text'; dobInput.readOnly = true; } catch (e) { /* ignore */ }
-        // Use local date (avoid timezone-shifted ISO strings). Set max to today (no future dates allowed).
         const now = new Date();
         const year = now.getFullYear();
         const month = String(now.getMonth() + 1).padStart(2, '0');
         const day = String(now.getDate()).padStart(2, '0');
         const todayLocal = `${year}-${month}-${day}`;
         dobInput.max = todayLocal;
-        // if a value somehow exceeds max, clear it
         if (dobInput.value && dobInput.value > dobInput.max) dobInput.value = '';
-        
-        // Prefer an enhanced datepicker (flatpickr) when available
-        // Initialize after a short delay to avoid race with script loading/order in some browsers
+
+        // Prefer flatpickr when available
         setTimeout(() => {
             if (window.flatpickr) {
                 try {
-                    // destroy existing instance if present
-                    if (dobInput._flatpickrInstance && dobInput._flatpickrInstance.destroy) {
-                        dobInput._flatpickrInstance.destroy();
-                    }
-                    window.flatpickr(dobInput, {
-                        maxDate: todayLocal,
-                        dateFormat: 'Y-m-d',
-                        allowInput: true,
-                        altInput: false,
-                        disableMobile: true,
-                        clickOpens: true,
-                        onReady: function(selectedDates, dateStr, instance) {
-                            instance.set('maxDate', todayLocal);
-                            dobInput._flatpickrInstance = instance;
-                        }
-                    });
-                    // remove any companion year/month/day selects if present
-                    rootAfterInsert.querySelectorAll('.dob-year-select, .dob-month-select, .dob-day-select').forEach(el => el.remove());
-                } catch (err) {
-                    console.warn('flatpickr init failed', err);
-                }
+                    if (dobInput._flatpickrInstance && dobInput._flatpickrInstance.destroy) dobInput._flatpickrInstance.destroy();
+                    window.flatpickr(dobInput, { maxDate: todayLocal, dateFormat: 'Y-m-d', allowInput: true, altInput: false, disableMobile: true, clickOpens: true, onReady(selectedDates, dateStr, instance) { instance.set('maxDate', todayLocal); dobInput._flatpickrInstance = instance; } });
+                    modalRoot.querySelectorAll('.dob-year-select, .dob-month-select, .dob-day-select').forEach(el => el.remove());
+                } catch (err) { console.warn('flatpickr init failed', err); }
             }
         }, 0);
-        if (window.flatpickr) {
-            // initialize flatpickr with maxDate today and year dropdown for fast selection
-            try {
-        // convert input type to text to prevent native date picker on some browsers
-        try { dobInput.type = 'text'; } catch (err) { /* ignore */ }
-
-        window.flatpickr(dobInput, {
-                    maxDate: todayLocal,
-                    dateFormat: 'Y-m-d',
-                    allowInput: true,
-                    altInput: false,
-                    disableMobile: true, // force flatpickr UI (avoid native Clear/Today controls)
-                    clickOpens: true,
-                    onReady: function(selectedDates, dateStr, instance) {
-                        // ensure the instance respects maxDate
-                        instance.set('maxDate', todayLocal);
-                        // expose instance if needed
-                        dobInput._flatpickrInstance = instance;
-                    }
-                });
-        // remove any companion year select if present
-        const existing = rootAfterInsert.querySelector('.dob-year-select');
-        if (existing) existing.remove();
-            } catch (err) { console.warn('flatpickr init failed', err); }
-    } else {
-        // Add a companion year selector to make choosing year faster.
-        // If a companion already exists (duplicate inserts), don't add another.
-    if (!rootAfterInsert.querySelector('.dob-year-select')) {
-            const select = document.createElement('select');
-            select.className = 'dob-year-select';
-            select.setAttribute('aria-label', 'Year of birth');
-            // placeholder option
-            const placeholder = document.createElement('option');
-            placeholder.value = '';
-            placeholder.textContent = 'Year';
-            select.appendChild(placeholder);
-
-            // build year range: from (currentYear) down to (currentYear - 100)
-            const start = year;
-            const end = Math.max(1900, year - 100);
-            for (let y = start; y >= end; y--) {
-                const opt = document.createElement('option');
-                opt.value = String(y);
-                opt.textContent = String(y);
-                select.appendChild(opt);
-            }
-
-            // insert the select after the dob input
-            dobInput.insertAdjacentElement('afterend', select);
-
-            // also add month and day selects to avoid relying on native calendar UI
-            const monthSelect = document.createElement('select');
-            monthSelect.className = 'dob-month-select';
-            monthSelect.setAttribute('aria-label', 'Month of birth');
-            const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-            const monthPlaceholder = document.createElement('option'); monthPlaceholder.value = ''; monthPlaceholder.textContent = 'Mon'; monthSelect.appendChild(monthPlaceholder);
-            for (let m = 1; m <= 12; m++) {
-                const opt = document.createElement('option');
-                const mm = String(m).padStart(2,'0');
-                opt.value = mm; opt.textContent = monthNames[m-1];
-                monthSelect.appendChild(opt);
-            }
-
-            const daySelect = document.createElement('select');
-            daySelect.className = 'dob-day-select';
-            daySelect.setAttribute('aria-label', 'Day of birth');
-            const dayPlaceholder = document.createElement('option'); dayPlaceholder.value = ''; dayPlaceholder.textContent = 'Day'; daySelect.appendChild(dayPlaceholder);
-            for (let d = 1; d <= 31; d++) {
-                const opt = document.createElement('option');
-                const dd = String(d).padStart(2,'0');
-                opt.value = dd; opt.textContent = String(d);
-                daySelect.appendChild(opt);
-            }
-
-            // insert month and day after the year select
-            select.insertAdjacentElement('afterend', monthSelect);
-            monthSelect.insertAdjacentElement('afterend', daySelect);
-
-            // prevent native picker from opening by making input text and readOnly
-            try { dobInput.type = 'text'; dobInput.readOnly = true; } catch (e) { /* ignore */ }
-
-            // helper to update day options based on month/year
-            function adjustDays() {
-                const y = select.value; const m = monthSelect.value;
-                if (!y || !m) return;
-                const maxDay = new Date(Number(y), Number(m), 0).getDate();
-                // remove extras
-                for (let i = daySelect.options.length - 1; i >= 0; i--) {
-                    const val = daySelect.options[i].value;
-                    if (!val) continue; // placeholder
-                    if (Number(val) > maxDay) daySelect.remove(i);
-                }
-                // ensure selected day <= maxDay
-                if (daySelect.value && Number(daySelect.value) > maxDay) daySelect.value = '';
-            }
-
-            function updateDobInputFromSelects() {
-                const y = select.value; const m = monthSelect.value; const d = daySelect.value;
-                if (!y || !m || !d) return;
-                const newVal = `${y}-${m}-${d}`;
-                dobInput.value = newVal > dobInput.max ? dobInput.max : newVal;
-                dobInput.dispatchEvent(new Event('input', { bubbles: true }));
-            }
-
-            // wire events
-            select.addEventListener('change', () => { adjustDays(); updateDobInputFromSelects(); });
-            monthSelect.addEventListener('change', () => { adjustDays(); updateDobInputFromSelects(); });
-            daySelect.addEventListener('change', () => { updateDobInputFromSelects(); });
-
-            // initialize selects from existing value if present
-            if (dobInput.value) {
-                const parts = dobInput.value.split('-');
-                if (parts.length === 3) {
-                    const [yy, mm, dd] = parts;
-                    select.value = yy;
-                    monthSelect.value = mm;
-                    // adjust days before setting day
-                    adjustDays();
-                    daySelect.value = dd;
-                }
-            }
-
-            // when user picks a year, update the date input while respecting max
-            select.addEventListener('change', () => {
-                const y = select.value;
-                if (!y) return;
-                // keep month/day if selected, otherwise use Jan 01
-                let mm = '01', dd = '01';
-                if (dobInput.value) {
-                    const parts = dobInput.value.split('-');
-                    if (parts.length === 3) { mm = parts[1]; dd = parts[2]; }
-                }
-                // if selected year is current year, ensure month/day do not exceed today
-                if (Number(y) === year) {
-                    if (mm > month || (mm === month && dd > day)) {
-                        mm = month; dd = day;
-                    }
-                }
-                const newVal = `${y}-${mm}-${dd}`;
-                // if newVal > max, cap to max
-                dobInput.value = newVal > dobInput.max ? dobInput.max : newVal;
-                // trigger input event for any listeners
-                dobInput.dispatchEvent(new Event('input', { bubbles: true }));
-            });
-
-            // keep year select in sync if user picks via native picker
-            dobInput.addEventListener('input', () => {
-                if (!dobInput.value) { select.value = ''; return; }
-                const parts = dobInput.value.split('-');
-                if (parts.length === 3) select.value = parts[0];
-            });
-        }
     }
 
+    // preselect student if provided (used when opening modal from a student row)
+    if (preselectId) {
+        const sel = clone.querySelector('select[name="student_id"]');
+        if (sel) sel.value = preselectId;
+        const hid = clone.querySelector('input[name="student_id"]');
+        if (hid) hid.value = preselectId;
     }
 
     // Attach submit handler scoped to this clone's form
@@ -375,7 +219,14 @@ window.viewProfile = function(id) {
         (async function(){
             let student = null;
             try {
-                const res = await fetch('/api/students.php');
+                const fd = new URLSearchParams();
+                fd.append('action', 'get_students');
+                fd.append('archived', '0');
+                const res = await fetch('/includes/submit.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: fd.toString()
+                });
                 if (res.ok) {
                     const arr = await res.json();
                     student = arr.find(s => String(s.id) === String(id));
@@ -390,27 +241,27 @@ window.viewProfile = function(id) {
                 body.innerHTML = '<p>Student not found.</p>';
             } else {
                 // Determine assigned therapist display name: prefer stored name then fallback to id lookup if available
-+                let assignedName = (student.assigned_therapist_name || '').trim();
-+
+                let assignedName = (student.assigned_therapist_name || '').trim();
+
                 if (!assignedName && student.assigned_therapist) {
                     // try to fetch users list quickly from the same API if available (best-effort)
                     try {
-+                        const usersRes = await fetch('/api/users.php');
-+                        if (usersRes.ok) {
-+                            const users = await usersRes.json();
-+                            const u = users.find(x => String(x.id) === String(student.assigned_therapist));
-+                            if (u) assignedName = `${u.first_name || ''} ${u.last_name || ''}`.trim();
-+                        }
-+                    } catch (e) { /* ignore */ }
-+                }
-+
-+                if (!assignedName) assignedName = 'Unassigned';
-+
-+                body.innerHTML = `<h3>${escapeHtml(student.first_name || '')} ${escapeHtml(student.last_name || '')}</h3>` +
-+                    `<p>Grade: ${escapeHtml(student.grade || '')}</p>` +
-+                    `<p>DOB: ${escapeHtml(student.date_of_birth || '')}</p>` +
-+                    `<p>Primary language: ${escapeHtml(student.primary_language || '')}</p>` +
-+                    `<p>Assigned Therapist: ${escapeHtml(assignedName)}</p>`;
+                        const usersRes = await fetch('/api/users.php');
+                        if (usersRes.ok) {
+                            const users = await usersRes.json();
+                            const u = users.find(x => String(x.id) === String(student.assigned_therapist));
+                            if (u) assignedName = `${u.first_name || ''} ${u.last_name || ''}`.trim();
+                        }
+                    } catch (e) { /* ignore */ }
+                }
+
+                if (!assignedName) assignedName = 'Unassigned';
+
+                body.innerHTML = `<h3>${escapeHtml(student.first_name || '')} ${escapeHtml(student.last_name || '')}</h3>` +
+                    `<p>Grade: ${escapeHtml(student.grade || '')}</p>` +
+                    `<p>DOB: ${escapeHtml(student.date_of_birth || '')}</p>` +
+                    `<p>Primary language: ${escapeHtml(student.primary_language || '')}</p>` +
+                    `<p>Assigned Therapist: ${escapeHtml(assignedName)}</p>`;
             }
             insertModal(clone);
         })();
@@ -427,7 +278,7 @@ window.viewProfile = function(id) {
     }
 
     // expose some small helpers for inline handlers used in templates
-    window.toggleStudentDetails = function(studentId) {
+    function _toggleStudentDetailsImpl(studentId) {
         try {
             // Close any other open student details first
             document.querySelectorAll('.student-row.expanded').forEach(row => {
@@ -469,20 +320,27 @@ window.viewProfile = function(id) {
         } catch (e) { 
             console.error('Error toggling student details:', e); 
         }
-    };
+    }
+
+    // only attach the global if one doesn't exist yet to avoid duplicates/overwrites
+    if (typeof window.toggleStudentDetails !== 'function') {
+        window.toggleStudentDetails = _toggleStudentDetailsImpl;
+    }
 
     // removal uses fetch-backed delete if available
+    // preserve any existing implementation (avoid arguments.callee which is invalid in ES modules)
+    const _existingRemoveStudent = (typeof window.removeStudent === 'function') ? window.removeStudent : null;
     window.removeStudent = function(id) {
-        // call global removeStudent implementation if present (from main.js)
-        if (typeof window.removeStudent === 'function' && window.removeStudent !== arguments.callee) {
-            // prefer existing network-aware removeStudent
-            return window.removeStudent(id);
+        if (_existingRemoveStudent && _existingRemoveStudent !== window.removeStudent) {
+            return _existingRemoveStudent(id);
         }
         if (!confirm('Remove student #' + id + '?')) return;
-        const btn = document.querySelector('[data-student-id="' + id + '"]');
-        if (btn) {
-            const wrapper = btn.parentNode;
-            if (wrapper) wrapper.remove();
+        const el = document.querySelector('[data-student-id="' + id + '"]');
+        const row = el ? el.closest('.student-row') : null;
+        if (row) {
+            row.remove();
+        } else if (el && el.parentNode) {
+            el.parentNode.remove();
         }
     };
 

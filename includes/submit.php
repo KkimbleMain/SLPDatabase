@@ -1,108 +1,90 @@
 <?php
-// Lightweight submit endpoint for add_student / add_goal / add_progress
-if (session_status() === PHP_SESSION_NONE) session_start();
+// Lightweight submit endpoint migrated to SQLite (uses includes/sqlite.php)
 
-// Ensure submit endpoint returns well-formed JSON on error.
-// Disable direct display of PHP errors (prevent raw warnings/html breaking JSON)
+if (session_status() === PHP_SESSION_NONE) session_start();
 @ini_set('display_errors', '0');
 @ini_set('log_errors', '1');
 
-// Convert warnings/notices into exceptions so the outer try/catch can handle them.
 set_error_handler(function($severity, $message, $file, $line) {
-    // Respect error_reporting level
-    if (!(error_reporting() & $severity)) {
-        return false; // let normal handler run for suppressed errors
-    }
+    if (!(error_reporting() & $severity)) return false;
     throw new ErrorException($message, 0, $severity, $file, $line);
 });
 
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/sqlite.php'; // must provide get_db()
 
 header('Content-Type: application/json');
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    echo json_encode(['success' => false, 'error' => 'Invalid request']);
+    echo json_encode(['success' => false, 'error' => 'Invalid request', 'message' => 'Invalid request']);
     exit;
 }
 
 $action = $_POST['action'] ?? '';
 
 try {
+    $pdo = get_db();
+
     switch ($action) {
-        case 'add_student':
-            $students = loadJsonData('students') ?: [];
-            $max = 0; foreach ($students as $s) { $max = max($max, (int)($s['id'] ?? 0)); }
-            $id = $max + 1;
-            
-            // Generate student ID from initials and random numbers
+        // Add student -> insert into students, create folder + initial_profile file, add documents entry
+        case 'add_student': {
             $firstName = trim($_POST['first_name'] ?? '');
-            $lastName = trim($_POST['last_name'] ?? '');
-            $firstInitial = !empty($firstName) ? strtoupper(substr($firstName, 0, 1)) : 'X';
-            $lastInitial = !empty($lastName) ? strtoupper(substr($lastName, 0, 1)) : 'X';
-            
-            // Generate unique student ID: initials + 4 random digits
+            $lastName  = trim($_POST['last_name'] ?? '');
+            $firstInitial = $firstName !== '' ? strtoupper(substr($firstName,0,1)) : 'X';
+            $lastInitial  = $lastName !== '' ? strtoupper(substr($lastName,0,1)) : 'X';
+
+            // generate unique external student_id (e.g., JD1234)
             do {
-                $randomNumbers = str_pad(mt_rand(0, 9999), 4, '0', STR_PAD_LEFT);
-                $studentId = $firstInitial . $lastInitial . $randomNumbers;
-                
-                // Check if this student ID already exists
-                $idExists = false;
-                foreach ($students as $existingStudent) {
-                    if (($existingStudent['student_id'] ?? '') === $studentId) {
-                        $idExists = true;
-                        break;
-                    }
-                }
-            } while ($idExists);
-            
-            $student = [
-                'id' => $id,
-                'student_id' => $studentId, // e.g., "JD1234"
-                'first_name' => $firstName,
-                'last_name' => $lastName,
-                'grade' => $_POST['grade'] ?? '',
-                'date_of_birth' => $_POST['date_of_birth'] ?? '',
-                'gender' => $_POST['gender'] ?? '',
-                'primary_language' => $_POST['primary_language'] ?? '',
-                'service_frequency' => $_POST['service_frequency'] ?? '',
-                'teacher' => $_POST['teacher'] ?? '',
-                'assigned_therapist_name' => trim($_POST['assigned_therapist_name'] ?? ''),
-                'assigned_therapist' => isset($_POST['assigned_therapist']) && $_POST['assigned_therapist'] !== '' ? (int)$_POST['assigned_therapist'] : ($_SESSION['user_id'] ?? null),
-                'parent_contact' => $_POST['parent_contact'] ?? '',
-                'medical_info' => $_POST['medical_info'] ?? '',
-                'created_at' => date('Y-m-d H:i:s'),
-                'updated_at' => date('Y-m-d H:i:s'),
-            ];
-            $students[] = $student;
-            saveJsonData('students', $students);
-            
-            // Create initial profile document for the student
-            $studentFolder = __DIR__ . '/../database/data/students/student_' . $id;
-            if (!is_dir($studentFolder)) {
-                mkdir($studentFolder, 0755, true);
-            }
-            
-            $profileData = [
-                'studentName' => $id,
-                'studentId' => $studentId, // Generated ID like "JD1234"
-                'fullName' => trim($student['first_name'] . ' ' . $student['last_name']),
-                'dateOfBirth' => $student['date_of_birth'],
-                'grade' => $student['grade'],
-                'gender' => $student['gender'],
-                'primaryLanguage' => $student['primary_language'],
-                'serviceFrequency' => $student['service_frequency'],
-                'teacher' => $student['teacher'],
-                'parentContact' => $student['parent_contact'],
-                'medicalInfo' => $student['medical_info'],
-                'enrollmentDate' => date('Y-m-d'),
-                'therapistNotes' => 'Initial profile created automatically upon student enrollment.'
-            ];
-            
+                $studentIdCandidate = $firstInitial . $lastInitial . str_pad(mt_rand(0,9999), 4, '0', STR_PAD_LEFT);
+                $stmt = $pdo->prepare('SELECT COUNT(*) FROM students WHERE student_id = :sid');
+                $stmt->execute([':sid' => $studentIdCandidate]);
+                $exists = (int)$stmt->fetchColumn() > 0;
+            } while ($exists);
+
+            // Persist additional profile fields that the UI collects
+            $stmt = $pdo->prepare('INSERT INTO students (student_id, first_name, last_name, grade, date_of_birth, age, gender, primary_language, service_frequency, assigned_therapist, teacher, parent_contact, medical_info, iep_status, created_at, updated_at) VALUES (:student_id, :first_name, :last_name, :grade, :date_of_birth, :age, :gender, :primary_language, :service_frequency, :assigned_therapist, :teacher, :parent_contact, :medical_info, :iep_status, :created_at, :updated_at)');
+            $stmt->execute([
+                ':student_id' => $studentIdCandidate,
+                ':first_name' => $firstName,
+                ':last_name'  => $lastName,
+                ':grade'      => $_POST['grade'] ?? '',
+                ':date_of_birth' => $_POST['date_of_birth'] ?? '',
+                ':age' => $_POST['age'] ?? null,
+                ':gender'     => $_POST['gender'] ?? '',
+                ':primary_language' => $_POST['primary_language'] ?? '',
+                ':service_frequency' => $_POST['service_frequency'] ?? '',
+                ':assigned_therapist' => isset($_POST['assigned_therapist']) && $_POST['assigned_therapist'] !== '' ? (int)$_POST['assigned_therapist'] : ($_SESSION['user_id'] ?? null),
+                ':teacher' => $_POST['teacher'] ?? '',
+                ':parent_contact' => $_POST['parent_contact'] ?? '',
+                ':medical_info' => $_POST['medical_info'] ?? '',
+                ':iep_status' => $_POST['iep_status'] ?? '',
+                ':created_at' => date('c'),
+                ':updated_at' => date('c'),
+            ]);
+
+            $id = (int)$pdo->lastInsertId();
+
+            // create initial profile file and add documents row
+            // Persist the profile document into the documents table in the DB (no filesystem writes)
+            $profileData = array(
+                        'studentName' => $id,
+                        'studentId' => $studentIdCandidate,
+                        'fullName' => trim($firstName . ' ' . $lastName),
+                        'dateOfBirth' => $_POST['date_of_birth'] ?? '',
+                        'grade' => $_POST['grade'] ?? '',
+                        'age' => $_POST['age'] ?? '',
+                        'gender' => $_POST['gender'] ?? '',
+                        'primaryLanguage' => $_POST['primary_language'] ?? '',
+                        'serviceFrequency' => $_POST['service_frequency'] ?? '',
+                        'teacher' => $_POST['teacher'] ?? '',
+                        'parentContact' => $_POST['parent_contact'] ?? '',
+                        'medicalInfo' => $_POST['medical_info'] ?? '',
+                        'iepStatus' => $_POST['iep_status'] ?? '',
+                        'enrollmentDate' => date('Y-m-d'),
+                    );
+
             $timestamp = time();
-            $filename = 'initial_profile_' . $timestamp . '.json';
-            $filePath = $studentFolder . '/' . $filename;
-            
             $profileDoc = [
                 'id' => $timestamp,
                 'student_id' => $id,
@@ -110,358 +92,299 @@ try {
                 'form_data' => $profileData,
                 'title' => 'Initial Profile - ' . $profileData['fullName'],
                 'therapist_id' => $_SESSION['user_id'] ?? null,
-                'created_at' => date('c'),
-                'filename' => $filename
+                'created_at' => date('c')
             ];
-            
-            file_put_contents($filePath, json_encode($profileDoc, JSON_PRETTY_PRINT));
-            
+
+            // Store initial profile in normalized initial_evaluations table
+            $stmt = $pdo->prepare('INSERT INTO initial_evaluations (student_id, title, therapist_id, metadata, content, created_at) VALUES (:student_id, :title, :therapist_id, :metadata, :content, :created_at)');
+            $stmt->execute([
+                ':student_id' => $id,
+                ':title' => $profileDoc['title'],
+                ':therapist_id' => $_SESSION['user_id'] ?? null,
+                ':metadata' => json_encode(['form_type' => 'initial_profile']),
+                ':content' => json_encode($profileDoc, JSON_PRETTY_PRINT),
+                ':created_at' => date('c'),
+            ]);
+
             echo json_encode(['success' => true, 'id' => $id]);
             break;
+        }
 
-        case 'add_goal':
-            $goals = loadJsonData('goals') ?: [];
-            $max = 0; foreach ($goals as $g) { $max = max($max, (int)($g['id'] ?? 0)); }
-            $id = $max + 1;
-            // Accept both legacy 'description' and new 'goal_text'
+        // Add goal -> insert into goals
+        case 'add_goal': {
             $goal_text = trim($_POST['goal_text'] ?? $_POST['description'] ?? '');
-            $goal = [
-                'id' => $id,
-                'student_id' => (int)($_POST['student_id'] ?? 0),
-                'therapist_id' => $_SESSION['user_id'] ?? null,
-                'goal_area' => trim($_POST['goal_area'] ?? ''),
-                // keep both keys for compatibility with templates
-                'goal_text' => $goal_text,
-                'description' => $goal_text,
-                'baseline_score' => is_numeric($_POST['baseline_score'] ?? null) ? (float)$_POST['baseline_score'] : 0,
-                'target_score' => is_numeric($_POST['target_score'] ?? null) ? (float)$_POST['target_score'] : 0,
-                'target_date' => $_POST['target_date'] ?? '',
-                'status' => 'active',
-                'created_at' => date('c'),
-            ];
-            $goals[] = $goal;
-            saveJsonData('goals', $goals);
-            echo json_encode(['success' => true, 'id' => $id]);
+            $stmt = $pdo->prepare('INSERT INTO goals (student_id, title, description, status, created_at) VALUES (:student_id, :title, :description, :status, :created_at)');
+            $stmt->execute([
+                ':student_id' => (int)($_POST['student_id'] ?? 0),
+                ':title' => $_POST['goal_area'] ?? '',
+                ':description' => $goal_text,
+                ':status' => 'active',
+                ':created_at' => date('c'),
+            ]);
+            $id = (int)$pdo->lastInsertId();
+            echo json_encode(['success'=>true,'id'=>$id]);
             break;
+        }
 
-        case 'add_progress':
-            $updates = loadJsonData('progress_updates') ?: [];
-            $max = 0; foreach ($updates as $u) { $max = max($max, (int)($u['id'] ?? 0)); }
-            $id = $max + 1;
-            $update = [
-                'id' => $id,
-                'student_id' => (int)($_POST['student_id'] ?? 0),
-                'goal_id' => isset($_POST['goal_id']) ? (int)$_POST['goal_id'] : null,
-                'therapist_id' => $_SESSION['user_id'] ?? null,
-                'date_recorded' => $_POST['date_recorded'] ?? date('Y-m-d'),
-                'score' => is_numeric($_POST['score'] ?? null) ? (float)$_POST['score'] : null,
-                'notes' => $_POST['notes'] ?? '',
-                'created_at' => date('c'),
-            ];
-            $updates[] = $update;
-            saveJsonData('progress_updates', $updates);
-            echo json_encode(['success' => true, 'id' => $id]);
+        // Add progress update -> insert into progress_updates
+        case 'add_progress': {
+            $stmt = $pdo->prepare('INSERT INTO progress_updates (student_id, note, created_at) VALUES (:student_id, :note, :created_at)');
+            $note = $_POST['notes'] ?? ($_POST['text'] ?? '');
+            $stmt->execute([
+                ':student_id' => (int)($_POST['student_id'] ?? 0),
+                ':note' => $note,
+                ':created_at' => date('c'),
+            ]);
+            $id = (int)$pdo->lastInsertId();
+            echo json_encode(['success'=>true,'id'=>$id]);
             break;
+        }
 
-        case 'delete_student':
+        // Delete student -> remove DB row (documents cascade) and keep files (optional)
+        case 'delete_student': {
             $idToDelete = isset($_POST['id']) ? (int)$_POST['id'] : 0;
-            if (!$idToDelete) {
-                echo json_encode(['success' => false, 'error' => 'Missing student id']);
-                break;
-            }
-            $students = loadJsonData('students') ?: [];
-            $before = count($students);
-            $students = array_values(array_filter($students, function($s) use ($idToDelete) {
-                return (int)($s['id'] ?? 0) !== $idToDelete;
-            }));
-            $after = count($students);
-            if ($after === $before) {
-                echo json_encode(['success' => false, 'error' => 'Student not found']);
-                break;
-            }
-            saveJsonData('students', $students);
-            echo json_encode(['success' => true]);
+            if (!$idToDelete) { echo json_encode(['success'=>false,'error'=>'Missing student id','message'=>'Missing student id']); break; }
+            $stmt = $pdo->prepare('DELETE FROM students WHERE id = :id');
+            $stmt->execute([':id'=>$idToDelete]);
+            echo json_encode(['success'=>true]);
             break;
-        case 'archive_student':
-            $idToArchive = isset($_POST['id']) ? (int)$_POST['id'] : 0;
-            if (!$idToArchive) {
-                echo json_encode(['success' => false, 'error' => 'Missing student id']);
-                break;
-            }
-            $students = loadJsonData('students') ?: [];
-            $found = false;
-            foreach ($students as &$s) {
-                if ((int)($s['id'] ?? 0) === $idToArchive) { $s['archived'] = true; $found = true; break; }
-            }
-            if (!$found) { echo json_encode(['success' => false, 'error' => 'Student not found']); break; }
-            saveJsonData('students', $students);
-            echo json_encode(['success' => true]);
-            break;
+        }
 
-        case 'save_document':
-            // Handle new form data structure with individual student folders
+        // Archive student -> set archived flag
+        case 'archive_student': {
+            $idToArchive = isset($_POST['id']) ? (int)$_POST['id'] : 0;
+            if (!$idToArchive) { echo json_encode(['success'=>false,'error'=>'Missing student id','message'=>'Missing student id']); break; }
+            $stmt = $pdo->prepare('UPDATE students SET archived = 1 WHERE id = :id');
+            $stmt->execute([':id'=>$idToArchive]);
+            echo json_encode(['success'=>true]);
+            break;
+        }
+
+        // Save document/form -> write file and insert documents row
+        case 'save_document': {
             $formData = $_POST['form_data'] ? json_decode($_POST['form_data'], true) : [];
+            $timestamp = time();
+            $formType = $_POST['form_type'] ?? ($formData['form_type'] ?? 'unspecified');
             $studentId = null;
-            
-            // Extract student ID from form data
             if (isset($formData['studentName']) && is_numeric($formData['studentName'])) {
                 $studentId = (int)$formData['studentName'];
             } elseif (isset($_POST['student_id'])) {
                 $studentId = (int)$_POST['student_id'];
             }
-            
-            if (!$studentId) {
-                echo json_encode(['success' => false, 'error' => 'Student ID is required']);
-                break;
-            }
-            
-            // Get student name for title
-            $students = loadJsonData('students') ?: [];
-            $studentRecord = null;
-            foreach ($students as $s) {
-                if ((int)($s['id'] ?? 0) === $studentId) {
-                    $studentRecord = $s;
-                    break;
-                }
-            }
-            
-            if (!$studentRecord) {
-                echo json_encode(['success' => false, 'error' => 'Student not found']);
-                break;
-            }
-            
-            $studentName = ($studentRecord['first_name'] ?? '') . ' ' . ($studentRecord['last_name'] ?? '');
-            $formType = $_POST['form_type'] ?? '';
-            $formTypeTitle = str_replace('_', ' ', ucwords($formType));
-            
-            // Create student folder if it doesn't exist
-            $studentFolder = __DIR__ . '/../database/data/students/student_' . $studentId;
-            if (!is_dir($studentFolder)) {
-                mkdir($studentFolder, 0755, true);
-            }
-            
-            // Generate unique filename
-            $timestamp = time();
-            $filename = $formType . '_' . $timestamp . '.json';
-            $filePath = $studentFolder . '/' . $filename;
-            
+            if (!$studentId) { echo json_encode(['success'=>false,'error'=>'Student ID is required','message'=>'Student ID is required']); break; }
+
+            // No filesystem folders are created; documents are stored in DB
+
+            $stmt = $pdo->prepare('SELECT first_name, last_name FROM students WHERE id = :id');
+            $stmt->execute([':id'=>$studentId]);
+            $r = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($r) $studentName = trim(($r['first_name'] ?? '') . ' ' . ($r['last_name'] ?? ''));
+
             $doc = [
-                'id' => $timestamp, // Use timestamp as unique ID
+                'id' => $timestamp,
                 'student_id' => $studentId,
                 'form_type' => $formType,
                 'form_data' => $formData,
-                'title' => $formTypeTitle . ' - ' . $studentName,
+                'title' => (isset($_POST['title']) ? $_POST['title'] : (ucwords(str_replace('_',' ',$formType)) . ' - ' . ($studentName ?? ''))),
                 'therapist_id' => $_SESSION['user_id'] ?? null,
-                'created_at' => date('c'),
-                'filename' => $filename
+                'created_at' => date('c')
             ];
-            
-            // Save individual form file
-            $jsonData = json_encode($doc, JSON_PRETTY_PRINT);
-            if (file_put_contents($filePath, $jsonData) === false) {
-                echo json_encode(['success' => false, 'error' => 'Failed to save document']);
-                break;
+
+            // Persist into the appropriate per-form table when possible
+            $userId = $_SESSION['user_id'] ?? null;
+            $contentJson = json_encode($doc, JSON_PRETTY_PRINT);
+            if (in_array($formType, ['initial_evaluation','initial_profile'])) {
+                $stmt = $pdo->prepare('INSERT INTO initial_evaluations (student_id, title, therapist_id, metadata, content, created_at) VALUES (:student_id, :title, :therapist_id, :metadata, :content, :created_at)');
+                $stmt->execute([
+                    ':student_id' => $studentId,
+                    ':title' => $doc['title'],
+                    ':therapist_id' => $userId,
+                    ':metadata' => json_encode(['form_type'=>$formType]),
+                    ':content' => $contentJson,
+                    ':created_at' => date('c'),
+                ]);
+            } elseif (in_array($formType, ['session_report','session_notes','session'])) {
+                // attempt to extract session_date/duration/session_type from form data
+                $session_date = $formData['sessionDate'] ?? $formData['session_date'] ?? null;
+                $duration = isset($formData['sessionDuration']) ? (int)$formData['sessionDuration'] : (isset($formData['duration_minutes']) ? (int)$formData['duration_minutes'] : null);
+                $stype = $formData['sessionType'] ?? $formData['session_type'] ?? null;
+                $stmt = $pdo->prepare('INSERT INTO session_reports (student_id, session_date, duration_minutes, session_type, title, therapist_id, metadata, content, created_at) VALUES (:student_id, :session_date, :duration_minutes, :session_type, :title, :therapist_id, :metadata, :content, :created_at)');
+                $stmt->execute([
+                    ':student_id' => $studentId,
+                    ':session_date' => $session_date,
+                    ':duration_minutes' => $duration,
+                    ':session_type' => $stype,
+                    ':title' => $doc['title'],
+                    ':therapist_id' => $userId,
+                    ':metadata' => json_encode(['form_type'=>$formType]),
+                    ':content' => $contentJson,
+                    ':created_at' => date('c'),
+                ]);
+            } elseif (in_array($formType, ['discharge_report','discharge'])) {
+                $stmt = $pdo->prepare('INSERT INTO discharge_reports (student_id, title, therapist_id, metadata, content, created_at) VALUES (:student_id, :title, :therapist_id, :metadata, :content, :created_at)');
+                $stmt->execute([
+                    ':student_id' => $studentId,
+                    ':title' => $doc['title'],
+                    ':therapist_id' => $userId,
+                    ':metadata' => json_encode(['form_type'=>$formType]),
+                    ':content' => $contentJson,
+                    ':created_at' => date('c'),
+                ]);
+            } else {
+                // Unknown form types: store in other_documents
+                $stmt = $pdo->prepare('INSERT INTO other_documents (student_id, title, form_type, therapist_id, metadata, content, created_at) VALUES (:student_id, :title, :form_type, :therapist_id, :metadata, :content, :created_at)');
+                $stmt->execute([
+                    ':student_id' => $studentId,
+                    ':title' => $doc['title'],
+                    ':form_type' => $formType,
+                    ':therapist_id' => $userId,
+                    ':metadata' => json_encode(['form_type'=>$formType]),
+                    ':content' => $contentJson,
+                    ':created_at' => date('c'),
+                ]);
             }
-            
-            echo json_encode(['success' => true, 'id' => $timestamp, 'filename' => $filename]);
+
+            echo json_encode(['success'=>true,'id'=>$timestamp]);
             break;
-            
-        case 'get_student_forms':
+        }
+
+        // Get student forms -> read documents table and file contents if present
+        case 'get_student_forms': {
             $studentId = isset($_POST['student_id']) ? (int)$_POST['student_id'] : 0;
-            if (!$studentId) {
-                echo json_encode(['success' => false, 'error' => 'Student ID required']);
-                break;
-            }
-            
-            $studentFolder = __DIR__ . '/../database/data/students/student_' . $studentId;
+            if (!$studentId) { echo json_encode(['success'=>false,'error'=>'Student ID required','message'=>'Student ID required']); break; }
+
+            // Aggregate forms from per-form tables (preferred) and fallback to documents table for unknowns
             $forms = [];
-            
-            if (is_dir($studentFolder)) {
-                $files = glob($studentFolder . '/*.json');
-                foreach ($files as $file) {
-                    $content = file_get_contents($file);
-                    if ($content !== false) {
-                        $formData = json_decode($content, true);
-                        if ($formData) {
-                            $forms[] = $formData;
-                        }
-                    }
-                }
-                
-                // Sort by creation date (newest first)
-                usort($forms, function($a, $b) {
-                    return strtotime($b['created_at']) - strtotime($a['created_at']);
-                });
+            // initial evaluations
+            $stmt = $pdo->prepare('SELECT id, title, therapist_id, metadata, content, created_at FROM initial_evaluations WHERE student_id = :sid ORDER BY created_at DESC');
+            $stmt->execute([':sid'=>$studentId]);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+                if (!empty($r['content'])) { $json = json_decode($r['content'], true); if ($json) { $forms[] = $json; continue; } }
+                $forms[] = ['id'=>$r['id'],'title'=>$r['title'],'created_at'=>$r['created_at'],'form_type'=>'initial_evaluation'];
             }
-            
-            echo json_encode(['success' => true, 'forms' => $forms]);
+            // session reports
+            $stmt = $pdo->prepare('SELECT id, title, therapist_id, metadata, content, created_at FROM session_reports WHERE student_id = :sid ORDER BY created_at DESC');
+            $stmt->execute([':sid'=>$studentId]);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+                if (!empty($r['content'])) { $json = json_decode($r['content'], true); if ($json) { $forms[] = $json; continue; } }
+                $forms[] = ['id'=>$r['id'],'title'=>$r['title'],'created_at'=>$r['created_at'],'form_type'=>'session_report'];
+            }
+            // discharge reports
+            $stmt = $pdo->prepare('SELECT id, title, therapist_id, metadata, content, created_at FROM discharge_reports WHERE student_id = :sid ORDER BY created_at DESC');
+            $stmt->execute([':sid'=>$studentId]);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+                if (!empty($r['content'])) { $json = json_decode($r['content'], true); if ($json) { $forms[] = $json; continue; } }
+                $forms[] = ['id'=>$r['id'],'title'=>$r['title'],'created_at'=>$r['created_at'],'form_type'=>'discharge_report'];
+            }
+            // fallback: other_documents table for any other types
+            $stmt = $pdo->prepare('SELECT id, title, form_type, metadata, content, created_at FROM other_documents WHERE student_id = :sid ORDER BY created_at DESC');
+            $stmt->execute([':sid'=>$studentId]);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+                if (!empty($r['content'])) { $json = json_decode($r['content'], true); if ($json) { $forms[] = $json; continue; } }
+                $forms[] = ['id'=>$r['id'],'title'=>$r['title'],'created_at'=>$r['created_at'],'form_type'=>$r['form_type'] ?? null];
+            }
+            echo json_encode(['success'=>true,'forms'=>$forms]);
             break;
+        }
 
-        case 'get_student':
+        // Get student -> return DB student row
+        case 'get_student': {
             $studentId = isset($_POST['id']) ? (int)$_POST['id'] : 0;
-            if (!$studentId) {
-                echo json_encode(['success' => false, 'error' => 'Student ID required']);
-                break;
-            }
-            
-            $students = loadJsonData('students') ?: [];
-            $student = null;
-            foreach ($students as $s) {
-                if ((int)($s['id'] ?? 0) === $studentId) {
-                    $student = $s;
-                    break;
-                }
-            }
-            
-            if (!$student) {
-                echo json_encode(['success' => false, 'error' => 'Student not found']);
-                break;
-            }
-
-            echo json_encode(['success' => true, 'student' => $student]);
+            if (!$studentId) { echo json_encode(['success'=>false,'error'=>'Student ID required','message'=>'Student ID required']); break; }
+            $stmt = $pdo->prepare('SELECT * FROM students WHERE id = :id');
+            $stmt->execute([':id'=>$studentId]);
+            $student = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$student) { echo json_encode(['success'=>false,'error'=>'Student not found','message'=>'Student not found']); break; }
+            echo json_encode(['success'=>true,'student'=>$student]);
             break;
+        }
 
-        case 'update_student':
+        // Update student -> update DB
+        case 'update_student': {
             $studentId = isset($_POST['student_id']) ? (int)$_POST['student_id'] : 0;
-            if (!$studentId) {
-                echo json_encode(['success' => false, 'error' => 'Student ID required']);
-                break;
-            }
-            
-            $students = loadJsonData('students') ?: [];
-            $studentIndex = -1;
-            foreach ($students as $index => $s) {
-                if ((int)($s['id'] ?? 0) === $studentId) {
-                    $studentIndex = $index;
-                    break;
-                }
-            }
-            
-            if ($studentIndex === -1) {
-                echo json_encode(['success' => false, 'error' => 'Student not found']);
-                break;
-            }
-            
-            // Update student data
-            $students[$studentIndex] = array_merge($students[$studentIndex], [
-                'first_name' => trim($_POST['first_name'] ?? ''),
-                'last_name' => trim($_POST['last_name'] ?? ''),
-                'grade' => $_POST['grade'] ?? '',
-                'assigned_therapist_name' => trim($_POST['assigned_therapist_name'] ?? ($students[$studentIndex]['assigned_therapist_name'] ?? '')),
-                'assigned_therapist' => isset($_POST['assigned_therapist']) && $_POST['assigned_therapist'] !== '' ? (int)$_POST['assigned_therapist'] : ($students[$studentIndex]['assigned_therapist'] ?? $_SESSION['user_id'] ?? null),
-                'date_of_birth' => $_POST['date_of_birth'] ?? '',
-                'gender' => $_POST['gender'] ?? '',
-                'primary_language' => $_POST['primary_language'] ?? '',
-                'service_frequency' => $_POST['service_frequency'] ?? '',
-                'teacher' => $_POST['teacher'] ?? '',
-                'parent_contact' => $_POST['parent_contact'] ?? '',
-                'medical_info' => $_POST['medical_info'] ?? '',
-                'updated_at' => date('Y-m-d H:i:s'),
+            if (!$studentId) { echo json_encode(['success'=>false,'error'=>'Student ID required','message'=>'Student ID required']); break; }
+            $stmt = $pdo->prepare('UPDATE students SET first_name=:first_name, last_name=:last_name, grade=:grade, assigned_therapist=:assigned_therapist, date_of_birth=:dob, age=:age, gender=:gender, primary_language=:pl, service_frequency=:sf, teacher=:teacher, parent_contact=:parent_contact, medical_info=:medical_info, iep_status=:iep_status, updated_at=:updated_at WHERE id=:id');
+            $stmt->execute([
+                ':first_name'=>trim($_POST['first_name'] ?? ''),
+                ':last_name'=>trim($_POST['last_name'] ?? ''),
+                ':grade'=>$_POST['grade'] ?? '',
+                ':assigned_therapist'=>isset($_POST['assigned_therapist']) && $_POST['assigned_therapist'] !== '' ? (int)$_POST['assigned_therapist'] : ($_SESSION['user_id'] ?? null),
+                ':dob'=>$_POST['date_of_birth'] ?? '',
+                ':age' => $_POST['age'] ?? null,
+                ':gender'=>$_POST['gender'] ?? '',
+                ':pl'=>$_POST['primary_language'] ?? '',
+                ':sf'=>$_POST['service_frequency'] ?? '',
+                ':teacher'=>$_POST['teacher'] ?? '',
+                ':parent_contact'=>$_POST['parent_contact'] ?? '',
+                ':medical_info'=>$_POST['medical_info'] ?? '',
+                ':iep_status'=>$_POST['iep_status'] ?? '',
+                ':updated_at'=>date('c'),
+                ':id'=>$studentId,
             ]);
-            
-            saveJsonData('students', $students);
-            echo json_encode(['success' => true]);
+            echo json_encode(['success'=>true]);
             break;
+        }
 
-        case 'export_student_html':
+        // Export student HTML -> build using DB data and documents files
+        case 'export_student_html': {
             $idToExport = isset($_POST['id']) ? (int)$_POST['id'] : 0;
-            if (!$idToExport) { echo json_encode(['success' => false, 'error' => 'Missing id']); break; }
-            $students = loadJsonData('students') ?: [];
-            $student = findRecord($students, 'id', $idToExport);
-            if (!$student) { echo json_encode(['success' => false, 'error' => 'Student not found']); break; }
-            
-            // Load forms from student folder
-            $studentFolder = __DIR__ . '/../database/data/students/student_' . $idToExport;
+            if (!$idToExport) { echo json_encode(['success'=>false,'error'=>'Missing id','message'=>'Missing id']); break; }
+
+            $stmt = $pdo->prepare('SELECT * FROM students WHERE id = :id');
+            $stmt->execute([':id'=>$idToExport]);
+            $student = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$student) { echo json_encode(['success'=>false,'error'=>'Student not found','message'=>'Student not found']); break; }
+
+            // aggregate per-form tables and documents fallback
             $student_docs = [];
-            
-            if (is_dir($studentFolder)) {
-                $files = glob($studentFolder . '/*.json');
-                foreach ($files as $file) {
-                    $content = file_get_contents($file);
-                    if ($content !== false) {
-                        $formData = json_decode($content, true);
-                        if ($formData) {
-                            $student_docs[] = $formData;
-                        }
-                    }
+            $tables = ['initial_evaluations','session_reports','discharge_reports','other_documents'];
+            foreach ($tables as $t) {
+                $stmt = $pdo->prepare("SELECT * FROM {$t} WHERE student_id = :sid ORDER BY created_at DESC");
+                $stmt->execute([':sid'=>$idToExport]);
+                foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $d) {
+                    if (!empty($d['content'])) { $formData = json_decode($d['content'], true); if ($formData) { $student_docs[] = $formData; continue; } }
+                    $student_docs[] = ['id'=>$d['id'],'title'=>$d['title'] ?? ($d['form_type'] ?? 'Document'),'created_at'=>$d['created_at']];
                 }
-                
-                // Sort by creation date (newest first for display)
-                usort($student_docs, function($a, $b) {
-                    return strtotime($b['created_at']) - strtotime($a['created_at']);
-                });
             }
-            
-            // Load goals and progress for this student
-            $goals = loadJsonData('goals') ?: [];
-            $progress_updates = loadJsonData('progress_updates') ?: [];
-            
-            $student_goals = array_filter($goals, function($goal) use ($idToExport) {
-                return (int)($goal['student_id'] ?? 0) === $idToExport;
-            });
-            
-            $student_progress = array_filter($progress_updates, function($update) use ($idToExport) {
-                return (int)($update['student_id'] ?? 0) === $idToExport;
-            });
-            
-            // Start output buffering to capture the template
+
+            // goals and progress for this student
+            $stmt = $pdo->prepare('SELECT * FROM goals WHERE student_id = :sid');
+            $stmt->execute([':sid'=>$idToExport]);
+            $student_goals = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $stmt = $pdo->prepare('SELECT * FROM progress_updates WHERE student_id = :sid ORDER BY created_at DESC');
+            $stmt->execute([':sid'=>$idToExport]);
+            $student_progress = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
             ob_start();
-            
-            // Include the export template
             include __DIR__ . '/../templates/export.php';
-            
-            // Get the rendered HTML
             $html = ob_get_clean();
-            echo json_encode(['success' => true, 'html' => $html]);
+            echo json_encode(['success'=>true,'html'=>$html]);
             break;
+        }
 
-        case 'get_archived_students':
-            $students = loadJsonData('students') ?: [];
-            $archivedStudents = [];
-            
-            foreach ($students as $student) {
-                if (!empty($student['archived'])) {
-                    $archivedStudents[] = $student;
-                }
-            }
-            
-            echo json_encode(['success' => true, 'students' => $archivedStudents]);
+        // Get archived students
+        case 'get_archived_students': {
+            $stmt = $pdo->query('SELECT * FROM students WHERE archived = 1 ORDER BY last_name, first_name');
+            $archived = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            echo json_encode(['success'=>true,'students'=>$archived]);
             break;
+        }
 
-        case 'restore_student':
+        // Restore student
+        case 'restore_student': {
             $studentId = isset($_POST['id']) ? (int)$_POST['id'] : 0;
-            if (!$studentId) {
-                echo json_encode(['success' => false, 'error' => 'Student ID required']);
-                break;
-            }
-            
-            $students = loadJsonData('students') ?: [];
-            $found = false;
-            
-            foreach ($students as &$student) {
-                if ((int)($student['id'] ?? 0) === $studentId) {
-                    unset($student['archived']); // Remove archived flag
-                    $student['updated_at'] = date('Y-m-d H:i:s');
-                    $found = true;
-                    break;
-                }
-            }
-            
-            if (!$found) {
-                echo json_encode(['success' => false, 'error' => 'Student not found']);
-                break;
-            }
-            
-            saveJsonData('students', $students);
-            echo json_encode(['success' => true]);
+            if (!$studentId) { echo json_encode(['success'=>false,'error'=>'Student ID required']); break; }
+            $stmt = $pdo->prepare('UPDATE students SET archived = 0 WHERE id = :id');
+            $stmt->execute([':id'=>$studentId]);
+            echo json_encode(['success'=>true]);
             break;
+        }
 
-        case 'export_all_students':
-            $students = loadJsonData('students') ?: [];
-            $activeStudents = array_filter($students, function($s) {
-                return empty($s['archived']);
-            });
-            
+        // Export all students as HTML
+        case 'export_all_students': {
+            $stmt = $pdo->query('SELECT * FROM students WHERE archived = 0 ORDER BY last_name, first_name');
+            $activeStudents = $stmt->fetchAll(PDO::FETCH_ASSOC);
             ob_start();
             ?>
             <!DOCTYPE html>
@@ -490,82 +413,118 @@ try {
             </body></html>
             <?php
             $exportHtml = ob_get_clean();
-            echo json_encode(['success' => true, 'html' => $exportHtml]);
+            echo json_encode(['success'=>true,'html'=>$exportHtml]);
             break;
+        }
 
-        case 'create_backup':
-            // Simple backup creation - could be enhanced to create ZIP files
-            $backupData = [
-                'students' => loadJsonData('students') ?: [],
-                'goals' => loadJsonData('goals') ?: [],
-                'progress_updates' => loadJsonData('progress_updates') ?: [],
-                'users' => loadJsonData('users') ?: [],
-                'backup_created' => date('Y-m-d H:i:s'),
-                'version' => '1.0'
-            ];
-            
-            $backupDir = __DIR__ . '/../database/backups';
-            if (!is_dir($backupDir)) {
-                mkdir($backupDir, 0755, true);
+        // Create backup -> export DB tables to JSON file
+        case 'create_backup': {
+            $backup = [];
+            $tables = ['students','goals','progress_updates','documents','users','reports'];
+            foreach ($tables as $t) {
+                $stmt = $pdo->query("SELECT * FROM {$t}");
+                $backup[$t] = $stmt->fetchAll(PDO::FETCH_ASSOC);
             }
-            
-            $backupFile = $backupDir . '/backup_' . date('Y-m-d_H-i-s') . '.json';
-            $result = file_put_contents($backupFile, json_encode($backupData, JSON_PRETTY_PRINT));
-            
-            if ($result !== false) {
-                echo json_encode(['success' => true, 'backup_file' => basename($backupFile)]);
-            } else {
-                echo json_encode(['success' => false, 'error' => 'Failed to create backup file']);
-            }
+            $backup['backup_created'] = date('c');
+            // Do not write JSON files to disk. Return the backup payload in the response so callers
+            // can download or persist it where appropriate.
+            echo json_encode(['success'=>true,'backup'=>$backup]);
             break;
+        }
 
-        case 'request_password_reset':
+        // Request password reset -> use users table if present, otherwise fallback to JSON resets
+        case 'request_password_reset': {
             $identifier = trim($_POST['username'] ?? '');
-            if (!$identifier) { echo json_encode(['success' => false, 'error' => 'Username/email required']); break; }
+            if (!$identifier) { echo json_encode(['success'=>false,'error'=>'Username/email required','message'=>'Username/email required']); break; }
 
-            $users = loadJsonData('users') ?: [];
-            $foundUser = null;
-            foreach ($users as $u) {
-                if (isset($u['username']) && $u['username'] === $identifier) { $foundUser = $u; break; }
-                // also allow email field if present
-                if (isset($u['email']) && $u['email'] === $identifier) { $foundUser = $u; break; }
-            }
+            $stmt = $pdo->prepare('SELECT id, username, email FROM users WHERE username = :id OR email = :id LIMIT 1');
+            $stmt->execute([':id'=>$identifier]);
+            $foundUser = $stmt->fetch(PDO::FETCH_ASSOC);
 
-            // Always respond success to avoid leaking valid usernames
+            // Always respond success to avoid leaking usernames
             if ($foundUser) {
-                $token = bin2hex(random_bytes(16));
-                $expires = time() + (60 * 60); // 1 hour
-
-                $resetDir = __DIR__ . '/../database/data';
-                if (!is_dir($resetDir)) mkdir($resetDir, 0755, true);
-                $resetsFile = $resetDir . '/password_resets.json';
-                $resets = [];
-                if (is_file($resetsFile)) {
-                    $content = file_get_contents($resetsFile);
-                    $resets = $content ? json_decode($content, true) : [];
-                    if (!is_array($resets)) $resets = [];
-                }
-
-                $resets[] = [
-                    'user_id' => $foundUser['id'] ?? null,
-                    'username' => $foundUser['username'] ?? null,
-                    'token' => $token,
-                    'expires_at' => date('c', $expires),
-                    'created_at' => date('c')
-                ];
-
-                file_put_contents($resetsFile, json_encode($resets, JSON_PRETTY_PRINT));
-
-                // Note: Email sending not implemented. Token stored for manual retrieval or future email integration.
+                    $token = bin2hex(random_bytes(16));
+                    $expires = time() + 3600;
+                    // Store reset token in DB (password_resets table) instead of writing to files
+                    try {
+                        $stmt = $pdo->prepare('INSERT INTO password_resets (user_id, username, token, expires_at, created_at) VALUES (:user_id, :username, :token, :expires_at, :created_at)');
+                        $stmt->execute([
+                            ':user_id' => $foundUser['id'] ?? null,
+                            ':username' => $foundUser['username'] ?? null,
+                            ':token' => $token,
+                            ':expires_at' => date('c', $expires),
+                            ':created_at' => date('c')
+                        ]);
+                    } catch (Exception $e) {
+                        // If DB insert fails, proceed silently but do not create filesystem paths
+                    }
             }
-
-            echo json_encode(['success' => true]);
+            echo json_encode(['success'=>true]);
             break;
+        }
+
+        // Get all (or filtered) students
+        case 'get_students': {
+            // optional: allow filtering via POST (assigned_therapist, archived)
+            $assigned = isset($_POST['assigned_therapist']) && $_POST['assigned_therapist'] !== '' ? (int)$_POST['assigned_therapist'] : null;
+            $archived  = isset($_POST['archived']) && $_POST['archived'] !== '' ? (int)$_POST['archived'] : null;
+
+            $sql = 'SELECT * FROM students';
+            $conds = [];
+            $params = [];
+
+            if ($assigned !== null) {
+                $conds[] = 'assigned_therapist = :assigned';
+                $params[':assigned'] = $assigned;
+            }
+            if ($archived !== null) {
+                $conds[] = 'archived = :archived';
+                $params[':archived'] = $archived;
+            }
+            if ($conds) $sql .= ' WHERE ' . implode(' AND ', $conds);
+
+            $sql .= ' ORDER BY last_name, first_name';
+
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            echo json_encode(['success' => true, 'students' => $rows]);
+            break;
+        }
+
+        // Get goals
+        case 'get_goals': {
+            $sid = isset($_POST['student_id']) ? (int)$_POST['student_id'] : 0;
+            if ($sid) {
+                $stmt = $pdo->prepare('SELECT * FROM goals WHERE student_id = :sid ORDER BY created_at DESC');
+                $stmt->execute([':sid'=>$sid]);
+                echo json_encode(['success'=>true,'goals'=>$stmt->fetchAll(PDO::FETCH_ASSOC)]);
+            } else {
+                $stmt = $pdo->query('SELECT * FROM goals ORDER BY created_at DESC');
+                echo json_encode(['success'=>true,'goals'=>$stmt->fetchAll(PDO::FETCH_ASSOC)]);
+            }
+            break;
+        }
+
+        // Get progress updates
+        case 'get_progress': {
+            $sid = isset($_POST['student_id']) ? (int)$_POST['student_id'] : 0;
+            if ($sid) {
+                $stmt = $pdo->prepare('SELECT * FROM progress_updates WHERE student_id = :sid ORDER BY created_at DESC');
+                $stmt->execute([':sid'=>$sid]);
+                echo json_encode(['success'=>true,'progress'=>$stmt->fetchAll(PDO::FETCH_ASSOC)]);
+            } else {
+                $stmt = $pdo->query('SELECT * FROM progress_updates ORDER BY created_at DESC');
+                echo json_encode(['success'=>true,'progress'=>$stmt->fetchAll(PDO::FETCH_ASSOC)]);
+            }
+            break;
+        }
 
         default:
-            echo json_encode(['success' => false, 'error' => 'Unknown action']);
+            echo json_encode(['success'=>false,'error'=>'Unknown action','message'=>'Unknown action']);
             break;
     }
+
 } catch (\Throwable $e) {
-    echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    echo json_encode(['success'=>false,'error'=>$e->getMessage(),'message'=>$e->getMessage()]);
 }

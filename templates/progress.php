@@ -10,11 +10,26 @@ if ($student_id) {
 $user_students = $user_students ?? findRecords('students', ['assigned_therapist' => $_SESSION['user_id'] ?? null]);
 if (!is_array($user_students)) $user_students = [];
 
+// build list of student ids for filtering (avoid undefined variable)
+$student_ids = array_map(function($s){ return (int)($s['id'] ?? 0); }, $user_students);
+
 // Get progress data for selected student
-$student_progress = findRecords('progress_updates', ['student_id' => $student_id]);
-// Sort by date
+$student_progress = [];
+if ($student_id) {
+    $student_progress = findRecords('progress_updates', ['student_id' => $student_id]);
+} else {
+    // optionally show recent for the therapist's students
+    $all_progress = findRecords('progress_updates', []);
+    $student_progress = array_filter($all_progress, function($p) use ($student_ids) {
+        return in_array((int)($p['student_id'] ?? 0), $student_ids);
+    });
+}
+
+// Sort by a normalized date field (prefer created_at, fallback to date_recorded)
 usort($student_progress, function($a, $b) {
-    return strtotime($b['date_recorded']) - strtotime($a['date_recorded']);
+    $da = strtotime($a['created_at'] ?? $a['date_recorded'] ?? 0);
+    $db = strtotime($b['created_at'] ?? $b['date_recorded'] ?? 0);
+    return $db <=> $da;
 });
 ?>
 
@@ -91,11 +106,17 @@ usort($student_progress, function($a, $b) {
 
 <?php
 // minimal listing of recent progress
-$progress_list = loadJsonData('progress_updates') ?: [];
-// filter by this therapist's students
-$student_ids = array_column(findRecords('students', ['assigned_therapist' => $_SESSION['user_id'] ?? null]), 'id');
+require_once __DIR__ . '/../includes/sqlite.php';
+try {
+    $pdo = get_db();
+    $progress_list = $pdo->query('SELECT p.*, s.first_name, s.last_name FROM progress_updates p LEFT JOIN students s ON s.id = p.student_id ORDER BY p.created_at DESC')->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) {
+    $progress_list = [];
+}
+// Later when filtering recent progress list from DB, reuse $student_ids
+// (the code that queries DB at the bottom already assigns $progress_list)
 $filtered = array_filter($progress_list, function($p) use ($student_ids) {
-    return in_array($p['student_id'] ?? 0, $student_ids);
+    return in_array((int)($p['student_id'] ?? 0), $student_ids);
 });
 ?>
 <section class="progress-list">

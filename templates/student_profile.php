@@ -72,7 +72,13 @@
                             if (empty($assignedName)) {
                                 $assignedTherapistId = $profileStudent['assigned_therapist'] ?? null;
                                 if (!empty($assignedTherapistId)) {
-                                    $all_users = loadJsonData('users') ?: [];
+                                    require_once __DIR__ . '/../includes/sqlite.php';
+                                    try {
+                                        $pdo = get_db();
+                                        $all_users = $pdo->query('SELECT id, username, first_name, last_name FROM users ORDER BY first_name, last_name')->fetchAll(PDO::FETCH_ASSOC);
+                                    } catch (Throwable $e) {
+                                        $all_users = [];
+                                    }
                                     foreach ($all_users as $u) {
                                         if ((int)($u['id'] ?? 0) === (int)$assignedTherapistId) {
                                             $assignedName = trim(($u['first_name'] ?? '') . ' ' . ($u['last_name'] ?? ''));

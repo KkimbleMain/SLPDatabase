@@ -6,52 +6,72 @@ if (session_status() === PHP_SESSION_NONE) session_start();
 
 define('DATA_DIR', __DIR__ . '/../database/data');
 
-if (!is_dir(DATA_DIR)) {
-	// attempt to create data directory if missing
-	@mkdir(DATA_DIR, 0755, true);
-}
-
-// No local SQL override loaded here; project uses JSON storage by default.
-
-/**
- * Load JSON data file by short name (e.g. 'students', 'users')
- * Returns array on success or empty array on failure.
- */
 function loadJsonData(string $name): array {
-	$path = DATA_DIR . '/' . basename($name) . '.json';
-	if (!file_exists($path)) return [];
-	$raw = @file_get_contents($path);
-	if ($raw === false) return [];
-	$data = json_decode($raw, true);
-	return is_array($data) ? $data : [];
+    // Try SQLite first if available and DB file exists
+    $tableMap = [
+        'users' => 'users',
+        'students' => 'students',
+        'documents' => 'documents',
+        'goals' => 'goals',
+        'progress_updates' => 'progress_updates',
+        'reports' => 'reports'
+    ];
+
+    // If sqlite helper exists, and the DB file is present, try to read from DB
+    try {
+        if (file_exists(__DIR__ . '/sqlite.php')) {
+            require_once __DIR__ . '/sqlite.php';
+            if (function_exists('get_db')) {
+                $pdo = get_db();
+                if ($pdo instanceof PDO) {
+                    if (isset($tableMap[$name])) {
+                        $table = $tableMap[$name];
+                        // ensure table exists
+                        $row = $pdo->query("SELECT name FROM sqlite_master WHERE type='table' AND name=" . $pdo->quote($table))->fetchColumn();
+                        if ($row) {
+                            $stmt = $pdo->query("SELECT * FROM " . $table . " ORDER BY id ASC");
+                            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                            // decode metadata JSON for documents if present
+                            if ($name === 'documents') {
+                                foreach ($rows as &$r) {
+                                    if (!empty($r['metadata']) && is_string($r['metadata'])) {
+                                        $meta = json_decode($r['metadata'], true);
+                                        $r['metadata'] = $meta === null ? $r['metadata'] : $meta;
+                                    }
+                                }
+                                unset($r);
+                            }
+                            return is_array($rows) ? $rows : [];
+                        }
+                    }
+                }
+            }
+        }
+    } catch (\Throwable $e) {
+        // On any DB error, fall back to JSON file below
+    }
+
+    // Legacy on-disk JSON files are no longer used for runtime reads. Return empty array
+    // if DB lookup did not yield results. This preserves API while preventing filesystem access.
+    return [];
 }
 
 /**
  * Save array data to JSON file
  */
 function saveJsonData(string $name, array $data): bool {
-	$path = DATA_DIR . '/' . basename($name) . '.json';
-	$json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
-	if ($json === false) return false;
-	// write atomically
-	$tmp = $path . '.tmp';
-	$ok = @file_put_contents($tmp, $json);
-	if ($ok === false) return false;
-	return rename($tmp, $path);
+    // Deprecated: runtime JSON file writes are disabled. The application uses SQLite for all writes.
+    // Dev migration scripts may still read or write JSON files directly.
+    return false;
 }
 
 /**
  * Insert a record into a JSON collection and return the new numeric id.
  */
 function insertRecord(string $name, array $record): int {
-	$rows = loadJsonData($name);
-	$max = 0;
-	foreach ($rows as $r) { $max = max($max, (int)($r['id'] ?? 0)); }
-	$id = $max + 1;
-	$record['id'] = $id;
-	$rows[] = $record;
-	saveJsonData($name, $rows);
-	return $id;
+    // InsertRecord is preserved for compatibility but will not write to disk. Use DB for persistence.
+    // If callers expect a numeric id, return a negative sentinel to indicate unsupported at runtime.
+    return -1;
 }
 
 /**

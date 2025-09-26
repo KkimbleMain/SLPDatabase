@@ -6,7 +6,8 @@
  */
 
 function sqlite_get_path() {
-    return __DIR__ . '/../database/slp.sqlite';
+    // use slp.db as the canonical DB filename
+    return __DIR__ . '/../database/slp.db';
 }
 
 function sqlite_init() {
@@ -18,8 +19,16 @@ function sqlite_init() {
 
     $dbDidExist = file_exists($path);
 
-    $pdo = new PDO('sqlite:' . $path);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    // ensure PDO and pdo_sqlite are available before attempting to connect
+    if (!class_exists('PDO') || !extension_loaded('pdo_sqlite')) {
+        throw new Exception("SQLite PDO driver not available. Enable the 'pdo_sqlite' extension in your php.ini and restart your webserver (Windows: uncomment extension=\"pdo_sqlite\" or enable via php.ini).\nIf you're running PHP CLI, ensure the same php.ini is used.");
+    }
+    try {
+        $pdo = new PDO('sqlite:' . $path);
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    } catch (PDOException $e) {
+        throw new Exception('Failed to open SQLite database: ' . $e->getMessage());
+    }
 
     // If the DB was just created and a SQL schema file exists, import it.
     $schemaFile = __DIR__ . '/../database/sqllite.sql';
@@ -89,6 +98,101 @@ function sqlite_init() {
         created_at TEXT
     );");
 
+    $pdo->exec("CREATE TABLE IF NOT EXISTS password_resets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        username TEXT,
+        token TEXT,
+        expires_at TEXT,
+        created_at TEXT
+    );");
+
+    // Legacy `documents` table removed from runtime creation. Create a new `other_documents`
+    // table to capture any form types that don't map into normalized per-form tables.
+    $pdo->exec("CREATE TABLE IF NOT EXISTS other_documents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL,
+        title TEXT,
+        form_type TEXT,
+        therapist_id INTEGER,
+        metadata TEXT,
+        content TEXT,
+        created_at TEXT,
+        FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
+    );");
+
+    // Create per-form normalized tables
+    $pdo->exec("CREATE TABLE IF NOT EXISTS initial_evaluations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL,
+        title TEXT,
+        therapist_id INTEGER,
+        metadata TEXT,
+        content TEXT,
+        created_at TEXT,
+        FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
+    );");
+
+    $pdo->exec("CREATE TABLE IF NOT EXISTS session_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL,
+        session_date TEXT,
+        duration_minutes INTEGER,
+        session_type TEXT,
+        title TEXT,
+        therapist_id INTEGER,
+        metadata TEXT,
+        content TEXT,
+        created_at TEXT,
+        FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
+    );");
+
+    $pdo->exec("CREATE TABLE IF NOT EXISTS discharge_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL,
+        title TEXT,
+        therapist_id INTEGER,
+        metadata TEXT,
+        content TEXT,
+        created_at TEXT,
+        FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
+    );");
+
+    // Activity log table for recent activity feed
+    $pdo->exec("CREATE TABLE IF NOT EXISTS activity_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        type TEXT,
+        student_id INTEGER,
+        user_id INTEGER,
+        description TEXT,
+        metadata TEXT,
+        created_at TEXT,
+        FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
+    );");
+
+    return $pdo;
+}
+
+// returns a shared PDO instance for sqlite
+function get_db() {
+    static $pdo = null;
+    if ($pdo instanceof PDO) return $pdo;
+    $dbFile = sqlite_get_path();
+    if (!file_exists($dbFile)) {
+        throw new Exception("Database file not found: $dbFile. Run the migration script or create the DB using the provided schema.");
+    }
+    if (!class_exists('PDO') || !extension_loaded('pdo_sqlite')) {
+        throw new Exception("SQLite PDO driver not available. Enable the 'pdo_sqlite' extension in your php.ini and restart your webserver.");
+    }
+    try {
+        $dsn = 'sqlite:' . $dbFile;
+        $pdo = new PDO($dsn);
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    } catch (PDOException $e) {
+        throw new Exception('Failed to open SQLite database: ' . $e->getMessage());
+    }
+    // ensure foreign keys
+    $pdo->exec('PRAGMA foreign_keys = ON');
     return $pdo;
 }
 
@@ -96,8 +200,15 @@ function sqlite_get_pdo() {
     static $pdo = null;
     if ($pdo === null) {
         $path = sqlite_get_path();
-        $pdo = new PDO('sqlite:' . $path);
-        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        if (!class_exists('PDO') || !extension_loaded('pdo_sqlite')) {
+            throw new Exception("SQLite PDO driver not available. Enable the 'pdo_sqlite' extension in your php.ini and restart your webserver.");
+        }
+        try {
+            $pdo = new PDO('sqlite:' . $path);
+            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        } catch (PDOException $e) {
+            throw new Exception('Failed to open SQLite database: ' . $e->getMessage());
+        }
     }
     return $pdo;
 }

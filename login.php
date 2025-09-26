@@ -24,19 +24,33 @@ if ($_POST) {
     if ($username && $password) {
         // Find user in JSON data
         $users = loadJsonData('users');
-        $user = findRecord($users, 'username', $username);
-
-        if ($user && verifyPassword($password, $user['password'])) {
-            $_SESSION['user_id'] = $user['id'];
-            $_SESSION['username'] = $user['username'];
-            $_SESSION['role'] = $user['role'];
-            $_SESSION['first_name'] = $user['first_name'];
-            
-            // Add success message for debugging
-            $success = 'Login successful! Redirecting...';
-            
-            // Use JavaScript redirect instead of PHP header to avoid header already sent issues
-            echo "<script>setTimeout(function(){ window.location.href = 'index.php'; }, 1000);</script>";
+        require_once __DIR__ . '/includes/sqlite.php';
+        $pdo = get_db();
+        $stmt = $pdo->prepare('SELECT * FROM users WHERE username = :u OR email = :u LIMIT 1');
+        $stmt->execute([':u' => $username]);
+        $u = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($u) {
+            $ok = false;
+            if (!empty($u['password_hash'])) {
+                $ok = password_verify($password, $u['password_hash']);
+            } else {
+                // fallback to legacy plaintext password field
+                $ok = isset($u['password']) && $u['password'] === $password;
+            }
+            if ($ok) {
+                $_SESSION['user_id'] = $u['id'];
+                $_SESSION['username'] = $u['username'];
+                $_SESSION['role'] = $u['role'];
+                $_SESSION['first_name'] = $u['first_name'];
+                
+                // Add success message for debugging
+                $success = 'Login successful! Redirecting...';
+                
+                // Use JavaScript redirect instead of PHP header to avoid header already sent issues
+                echo "<script>setTimeout(function(){ window.location.href = 'index.php'; }, 1000);</script>";
+            } else {
+                $error = 'Invalid credentials - please check username and password';
+            }
         } else {
             $error = 'Invalid credentials - please check username and password';
         }

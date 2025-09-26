@@ -35,7 +35,16 @@ if (!$user_id) {
 $view = $_GET['view'] ?? 'dashboard';
 
 // Load user data safely (helpers accept table name or arrays)
-$users = loadJsonData('users') ?: [];
+require_once __DIR__ . '/includes/sqlite.php';
+try {
+    $pdo = get_db();
+    $users = $pdo->query('SELECT id, username, first_name, last_name FROM users')->fetchAll(PDO::FETCH_ASSOC);
+    $progress_updates = $pdo->query('SELECT p.*, s.first_name AS student_first, s.last_name AS student_last FROM progress_updates p LEFT JOIN students s ON s.id = p.student_id ORDER BY p.created_at DESC')->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) {
+    $users = [];
+    $progress_updates = [];
+}
+
 $user_data = findRecord('users', 'id', $user_id);
 if (!is_array($user_data)) $user_data = [];
 
@@ -48,9 +57,6 @@ $total_students = count($user_students);
 $goals = findRecords('goals', ['therapist_id' => $user_id]);
 if (!is_array($goals)) $goals = [];
 $total_goals = count($goals);
-
-$progress_updates = loadJsonData('progress_updates');
-if (!is_array($progress_updates)) $progress_updates = [];
 
 // Load comprehensive recent activity
 require_once 'includes/activity_tracker.php';
