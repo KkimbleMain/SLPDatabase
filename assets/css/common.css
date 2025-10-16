@@ -35,6 +35,17 @@ body {
     -moz-osx-font-smoothing: grayscale;
 }
 
+/* Reserve space for the vertical scrollbar to avoid layout shifts when
+    switching between pages with different content heights. This ensures
+    the header/container width remains stable (prevents ~15px jumps). */
+html { scrollbar-gutter: stable; }
+/* Force a persistent vertical scrollbar so the viewport width remains
+    stable across pages that have different content heights. This avoids
+    layout shifts when the scrollbar appears/disappears. */
+html { overflow-y: scroll; }
+/* Keep body flexible for layout but don't allow it to suppress scroll on some platforms. */
+body { overflow-y: visible; }
+
 /* Make layout a column so footer can be pushed to the bottom on short pages */
 html, body {
     height: 100%;
@@ -65,7 +76,13 @@ a {
     text-decoration: none;
 }
 
-a:hover {
+/* Remove global underline on anchor hover to avoid underlining button-like links.
+   Use explicit classes for textual links where underline is desired (.text-link) */
+
+.text-link:hover,
+.footer-section a:hover,
+.register-link a:hover,
+.forgot-password a:hover {
     text-decoration: underline;
 }
 
@@ -125,14 +142,22 @@ a:hover {
 
 /* Header inner container (matching markup .header-content) */
 .main-header .header-content {
-    max-width: 1180px;
+    /* Match the page container width so header elements align with page content.
+       Use a three-column grid (logo / nav / user-menu) so the main-nav can be
+       centered between the logo and user menu regardless of their widths. */
+    max-width: 1400px;
     margin: 0 auto;
-    display: flex;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
     align-items: center;
-    justify-content: space-between;
     gap: 16px;
     padding: 12px 20px;
 }
+
+/* Make the three header regions explicit so we can center the nav reliably */
+.main-header .header-content .logo { justify-self: start; }
+.main-header .header-content .main-nav { justify-self: center; }
+.main-header .header-content .user-menu { justify-self: end; }
 
 /* Keep header and page titles showing the arrow cursor (not the text I-beam) */
 .main-header h1,
@@ -159,28 +184,29 @@ a:hover {
 .main-nav a {
     text-decoration: none;
     color: var(--text-color);
-    font-weight: 600;
-    padding: 0.45rem 0.85rem;
+    font-weight: 600; /* keep font weight consistent for all nav items */
+    padding: 0.5rem 0.9rem; /* explicit and identical for active/inactive */
     border-radius: 8px;
     transition: var(--transition);
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    border: 1px solid transparent;
+    border: 1px solid transparent; /* keep border present to avoid layout shifts */
     background: transparent;
+    box-sizing: border-box; /* ensure padding/border are included in computed width */
 }
 
-.main-nav a.active {
-    padding: 0.5rem 0.9rem;
-}
-
-.main-nav a:hover,
+/* Active state should only change color/background, not padding or border width */
 .main-nav a.active {
     background: rgba(44,90,160,0.12);
     color: var(--primary-600);
     box-shadow: none;
-    border-radius: 8px;
     border-color: rgba(36,74,136,0.06);
+}
+
+.main-nav a:hover {
+    background: rgba(44,90,160,0.12);
+    color: var(--primary-600);
 }
 
 .user-menu {
@@ -736,6 +762,18 @@ textarea::-webkit-resizer { display: none; }
     transform: translateY(-1px);
 }
 
+/* Prevent underline appearing on hover for Students page interactive controls */
+.students-grid a,
+.students-grid a:hover,
+.student-actions .btn,
+.student-actions .btn:hover,
+.action-btn,
+.action-btn:hover,
+.student-button,
+.student-button:hover {
+    text-decoration: none !important;
+}
+
 .student-actions .btn-danger {
     background: white;
     border: 1px solid var(--danger-color);
@@ -808,6 +846,30 @@ textarea::-webkit-resizer { display: none; }
     position: relative;
     box-shadow: 0 4px 6px rgba(0,0,0,0.1);
 }
+
+/* Wider modal variant for printable previews / cumulative records */
+.modal-content.modal-wide {
+    max-width: 1100px; /* wider to fit more report content comfortably */
+    max-height: calc(100vh - 48px); /* taller to show more of the report */
+}
+
+/* Circular close button consistent with other modals */
+.modal .close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: #f5f7fb;
+    color: var(--dark-gray);
+    font-size: 20px;
+    line-height: 1;
+    border: 1px solid rgba(0,0,0,0.04);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    cursor: pointer;
+}
+.modal .close:hover { background: #eef3fb; color: var(--primary-600); }
 
 .close {
     color: var(--dark-gray);
@@ -886,6 +948,15 @@ textarea::-webkit-resizer { display: none; }
         gap: 1rem;
         padding: 1rem;
     }
+    /* On smaller screens stack the header content to avoid cramped grid columns */
+    .main-header .header-content {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.5rem;
+        padding: 12px 14px;
+    }
+    .main-header .header-content .main-nav { order: 2; justify-self: stretch; }
     
     .main-nav ul {
         flex-wrap: wrap;
@@ -1125,18 +1196,6 @@ textarea::-webkit-resizer { display: none; }
     background: var(--primary-color);
     color: white;
     transform: translateY(-1px);
-}
-
-/* Documentation student selection styles */
-.selected-student-info {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    padding: 0.75rem 1rem;
-    background: var(--light-bg);
-    border: 1px solid var(--border-color);
-    border-radius: var(--border-radius);
-    margin-top: 0.5rem;
 }
 
 .btn-sm {

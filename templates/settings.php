@@ -48,9 +48,9 @@ try {
 			<div class="setting-item">
 				<div class="setting-info">
 					<label>Display Name</label>
-					<span class="setting-value"><?php echo htmlspecialchars($user_data['first_name'] . ' ' . $user_data['last_name']); ?></span>
+					<span id="displayNameValue" class="setting-value"><?php echo htmlspecialchars($user_data['first_name'] . ' ' . $user_data['last_name']); ?></span>
 				</div>
-				<button class="btn btn-outline" onclick="editProfile()">Edit</button>
+				<button class="btn btn-outline" onclick="(window.editProfile ? window.editProfile() : alert('Profile editing not available'))">Edit</button>
 			</div>
 			<div class="setting-item">
 				<div class="setting-info">
@@ -64,36 +64,153 @@ try {
 					<label>Password</label>
 					<span class="setting-value">••••••••</span>
 				</div>
-				<button class="btn btn-outline" onclick="changePassword()">Change</button>
+				<button class="btn btn-outline" onclick="(window.changePassword ? window.changePassword() : alert('Password change not available'))">Change</button>
 			</div>
 		</div>
+
+	<!-- Profile edit modal -->
+	<div id="profileModal" class="modal" style="display:none;">
+		<div class="modal-content">
+			<div class="modal-header">
+				<h2>Edit Profile</h2>
+				<button class="close" type="button" onclick="(window.hideModalById ? window.hideModalById('profileModal') : (function(){ const m=document.getElementById('profileModal'); if(m) m.style.display='none'; })())">&times;</button>
+			</div>
+			<div class="modal-body">
+				<div class="form-group">
+					<label for="profileFirstName">First name</label>
+					<input id="profileFirstName" name="first_name" type="text" required />
+				</div>
+				<div class="form-group">
+					<label for="profileLastName">Last name</label>
+					<input id="profileLastName" name="last_name" type="text" required />
+				</div>
+			</div>
+			<div class="modal-actions">
+				<button class="btn btn-outline" type="button" onclick="(window.hideModalById ? window.hideModalById('profileModal') : (function(){ const m=document.getElementById('profileModal'); if(m) m.style.display='none'; })())">Cancel</button>
+				<button class="btn btn-primary" type="button" id="saveProfileBtn">Save</button>
+			</div>
+		</div>
+	</div>
+
+	<!-- Change password modal -->
+	<div id="changePasswordModal" class="modal" style="display:none;">
+		<div class="modal-content">
+			<div class="modal-header">
+				<h2>Change Password</h2>
+				<button class="close" type="button" onclick="(window.hideModalById ? window.hideModalById('changePasswordModal') : (function(){ const m=document.getElementById('changePasswordModal'); if(m) m.style.display='none'; })())">&times;</button>
+			</div>
+			<div class="modal-body">
+				<div class="form-group">
+					<label for="currentPassword">Current password</label>
+					<input id="currentPassword" name="current_password" type="password" required />
+				</div>
+				<div class="form-group">
+					<label for="newPassword">New password</label>
+					<input id="newPassword" name="new_password" type="password" required />
+				</div>
+				<div class="form-group">
+					<label for="confirmPassword">Confirm new password</label>
+					<input id="confirmPassword" name="confirm_password" type="password" required />
+				</div>
+			</div>
+			<div class="modal-actions">
+				<button class="btn btn-outline" type="button" onclick="(window.hideModalById ? window.hideModalById('changePasswordModal') : (function(){ const m=document.getElementById('changePasswordModal'); if(m) m.style.display='none'; })())">Cancel</button>
+				<button class="btn btn-primary" type="button" id="savePasswordBtn">Change Password</button>
+			</div>
+		</div>
+	</div>
 
 		<!-- Data Management -->
 		<div class="settings-section">
 			<div class="section-header">
-				<h3>Data Management</h3>
-				<p class="muted">Backup, export, and manage your data</p>
+				<h3>Data</h3>
+				<p class="muted">Quick raw counts from the database (read-only)</p>
 			</div>
+			<?php
+			// Compute counts defensively – some tables may not exist on older installs
+			try {
+				$pdo = get_db();
+				$total_students = (int)$pdo->query('SELECT COUNT(*) FROM students')->fetchColumn();
+				$active_students = (int)$pdo->query('SELECT COUNT(*) FROM students WHERE archived = 0 OR archived IS NULL')->fetchColumn();
+				$archived_students = (int)$pdo->query('SELECT COUNT(*) FROM students WHERE archived = 1')->fetchColumn();
+
+				// document-type counts
+				$cnt_goals = 0; $cnt_initial = 0; $cnt_session = 0; $cnt_discharge = 0; $cnt_other = 0; $cnt_orphan_other = 0;
+				try { $cnt_goals = (int)$pdo->query('SELECT COUNT(*) FROM goals')->fetchColumn(); } catch (Throwable $e) { }
+				try { $cnt_initial = (int)$pdo->query('SELECT COUNT(*) FROM initial_evaluations')->fetchColumn(); } catch (Throwable $e) { }
+				try { $cnt_session = (int)$pdo->query('SELECT COUNT(*) FROM session_reports')->fetchColumn(); } catch (Throwable $e) { }
+				try { $cnt_discharge = (int)$pdo->query('SELECT COUNT(*) FROM discharge_reports')->fetchColumn(); } catch (Throwable $e) { }
+				try { $cnt_other = (int)$pdo->query('SELECT COUNT(*) FROM other_documents')->fetchColumn(); } catch (Throwable $e) { }
+				// other_documents orphan rows (no matching student)
+				try { $cnt_orphan_other = (int)$pdo->query("SELECT COUNT(*) FROM other_documents WHERE student_id IS NULL OR student_id NOT IN (SELECT id FROM students)")->fetchColumn(); } catch (Throwable $e) { }
+
+				// progress-related counts
+				$cnt_progress_reports = 0; $cnt_progress_skills = 0; $cnt_progress_updates = 0;
+				try { $cnt_progress_reports = (int)$pdo->query('SELECT COUNT(*) FROM progress_reports')->fetchColumn(); } catch (Throwable $e) { }
+				try { $cnt_progress_skills = (int)$pdo->query('SELECT COUNT(*) FROM progress_skills')->fetchColumn(); } catch (Throwable $e) { }
+				try { $cnt_progress_updates = (int)$pdo->query('SELECT COUNT(*) FROM progress_updates')->fetchColumn(); } catch (Throwable $e) { }
+
+				// goals table (rows)
+				$cnt_goals_rows = 0; try { $cnt_goals_rows = (int)$pdo->query('SELECT COUNT(*) FROM goals')->fetchColumn(); } catch (Throwable $e) { }
+
+				// total documents computed across canonical tables (matches dashboard logic)
+				$total_documents = 0;
+				$docTables = ['goals','initial_evaluations','session_reports','other_documents','discharge_reports'];
+				foreach ($docTables as $tbl) {
+					try { $st = $pdo->prepare("SELECT COUNT(*) FROM {$tbl} t JOIN students s ON t.student_id = s.id WHERE s.archived = 0"); $st->execute(); $total_documents += (int)$st->fetchColumn(); } catch (Throwable $e) { }
+				}
+			} catch (Throwable $e) {
+				// If DB access fails, fall back to safe defaults
+				$total_students = count($user_students);
+				$active_students = max(0, count($user_students) - $archivedCount);
+				$archived_students = $archivedCount;
+				$cnt_goals = $cnt_initial = $cnt_session = $cnt_discharge = $cnt_other = $cnt_orphan_other = 0;
+				$cnt_progress_reports = $cnt_progress_skills = $cnt_progress_updates = 0;
+				$total_documents = 0;
+			}
+			?>
+
 			<div class="setting-item">
 				<div class="setting-info">
-					<label>Total Students</label>
-					<span class="setting-value"><?php echo count($user_students) - $archivedCount; ?> active</span>
+					<label>Total students</label>
+					<span class="setting-value"><?php echo (int)$total_students; ?> total — <?php echo (int)$active_students; ?> active, <?php echo (int)$archived_students; ?> archived</span>
 				</div>
-				<button class="btn btn-outline" onclick="exportAllStudents()">Export All</button>
 			</div>
+
 			<div class="setting-item">
 				<div class="setting-info">
-					<label>Total Documents</label>
-					<span class="setting-value"><?php echo $totalDocs; ?> forms</span>
+					<label>Documents (by type)</label>
+					<div class="muted">
+						<ul style="list-style:none; padding-left:0; margin:0;">
+							<li>Goals: <?php echo (int)$cnt_goals; ?></li>
+							<li>Initial evaluations: <?php echo (int)$cnt_initial; ?></li>
+							<li>Session reports: <?php echo (int)$cnt_session; ?></li>
+							<li>Discharge reports: <?php echo (int)$cnt_discharge; ?></li>
+							<li>Other documents: <?php echo (int)$cnt_other; ?></li>
+						</ul>
+					</div>
 				</div>
-				<button class="btn btn-outline" onclick="exportAllDocuments()">Export All</button>
 			</div>
+
 			<div class="setting-item">
 				<div class="setting-info">
-					<label>Database Backup</label>
-					<span class="setting-value">Create complete backup</span>
+					<label>Progress reports</label>
+					<span class="setting-value"><?php echo (int)$cnt_progress_reports; ?></span>
 				</div>
-				<button class="btn btn-primary" onclick="createBackup()">Backup Now</button>
+			</div>
+
+			<div class="setting-item">
+				<div class="setting-info">
+					<label>Progress skills</label>
+					<span class="setting-value"><?php echo (int)$cnt_progress_skills; ?></span>
+				</div>
+			</div>
+
+			<div class="setting-item">
+				<div class="setting-info">
+					<label>Progress updates (history)</label>
+					<span class="setting-value"><?php echo (int)$cnt_progress_updates; ?></span>
+				</div>
 			</div>
 		</div>
 
@@ -112,73 +229,7 @@ try {
 				<!-- remove inline onclick; JS will wire this -->
 				<button id="viewArchivedStudentsBtn" data-action="view-archived-students" class="btn btn-secondary" <?php echo $archivedCount === 0 ? 'disabled' : ''; ?> onclick="viewArchivedStudents()">View Archived</button>
 			</div>
-			<!-- Recover button removed — use "View Archived" to manage restores -->
 		</div>
-
-		<!-- System Preferences -->
-		<div class="settings-section">
-			<div class="section-header">
-				<h3>System Preferences</h3>
-				<p class="muted">Customize your application experience</p>
-			</div>
-			<div class="setting-item">
-				<div class="setting-info">
-					<label>Default Grade Filter</label>
-					<select id="defaultGradeFilter" class="setting-control" onchange="savePreference('defaultGrade', this.value)">
-						<option value="">All Grades</option>
-						<option value="K">Kindergarten</option>
-						<option value="1">Grade 1</option>
-						<option value="2">Grade 2</option>
-						<option value="3">Grade 3</option>
-						<option value="4">Grade 4</option>
-						<option value="5">Grade 5</option>
-						<option value="6">Grade 6</option>
-						<option value="7">Grade 7</option>
-						<option value="8">Grade 8</option>
-						<option value="9">Grade 9</option>
-						<option value="10">Grade 10</option>
-						<option value="11">Grade 11</option>
-						<option value="12">Grade 12</option>
-					</select>
-				</div>
-			</div>
-			<div class="setting-item">
-				<div class="setting-info">
-					<label>Students Per Page</label>
-					<select id="studentsPerPage" class="setting-control" onchange="savePreference('studentsPerPage', this.value)">
-						<option value="10">10 students</option>
-						<option value="25" selected>25 students</option>
-						<option value="50">50 students</option>
-						<option value="100">All students</option>
-					</select>
-				</div>
-			</div>
-			<div class="setting-item">
-				<div class="setting-info">
-					<label>Auto-Save Forms</label>
-					<span class="setting-value">Automatically save form drafts</span>
-				</div>
-				<label class="toggle-switch">
-					<input type="checkbox" id="autoSaveForms" checked onchange="savePreference('autoSave', this.checked)">
-					<span class="toggle-slider"></span>
-				</label>
-			</div>
-			<div class="setting-item">
-				<div class="setting-info">
-					<label>Show Student IDs</label>
-					<span class="setting-value">Display student IDs in lists</span>
-				</div>
-				<label class="toggle-switch">
-					<input type="checkbox" id="showStudentIds" checked onchange="savePreference('showStudentIds', this.checked)">
-					<span class="toggle-slider"></span>
-				</label>
-			</div>
-		</div>
-
-		<!-- Application Info -->
-
-
-
 	</div>
 </div>
 

@@ -20,10 +20,7 @@ if ($selectedStudentId) {
 	<div class="page-header stack">
 		<h1>Documentation<?php if ($selectedStudent): ?> - <?php echo htmlspecialchars($selectedStudent['first_name'] . ' ' . $selectedStudent['last_name']); ?><?php endif; ?></h1>
 		<?php if ($selectedStudent): ?>
-		<div class="selected-student-info">
-			<span class="muted">Viewing forms for: <?php echo htmlspecialchars($selectedStudent['first_name'] . ' ' . $selectedStudent['last_name']); ?> (ID: <?php echo htmlspecialchars($selectedStudent['student_id'] ?? $selectedStudent['id']); ?>)</span>
-			<a href="?view=documentation" class="btn btn-outline btn-sm">View All Students</a>
-		</div>
+		<!-- Selected student header removed to avoid redundant banner; page title already shows student name when applicable -->
 		<?php endif; ?>
 	</div>
 
@@ -52,8 +49,9 @@ if ($selectedStudentId) {
 						<option value="initial_evaluation">Initial Evaluation</option>
 						<option value="goals_form">Goals Form</option>
 						<option value="session_report">Session Report</option>
-						<option value="progress_report">Progress Report</option>
+						<!-- Progress Report option removed -->
 						<option value="discharge_report">Discharge Report</option>
+						<option value="other_documents">Other Documents</option>
 					</select>
 				</div>
 			</div>
@@ -76,36 +74,37 @@ if ($selectedStudentId) {
 				<h3>Initial Evaluation</h3>
 				<div class="form-actions">
 					<button class="btn btn-primary" onclick="showDocModal('initial_evaluation')">Create Form</button>
-					<button class="btn btn-outline" onclick="downloadBlankPDF('initial_evaluation')">Download PDF</button>
 				</div>
 			</div>
 			<div class="form-card">
 				<h3>Goals Form</h3>
 				<div class="form-actions">
 					<button class="btn btn-primary" onclick="showDocModal('goals_form')">Create Form</button>
-					<button class="btn btn-outline" onclick="downloadBlankPDF('goals_form')">Download PDF</button>
 				</div>
 			</div>
 			<div class="form-card">
 				<h3>Session Report</h3>
 				<div class="form-actions">
 					<button class="btn btn-primary" onclick="showDocModal('session_report')">Create Form</button>
-					<button class="btn btn-outline" onclick="downloadBlankPDF('session_report')">Download PDF</button>
 				</div>
 			</div>
-			<div class="form-card">
-				<h3>Progress Report</h3>
-				<div class="form-actions">
-					<button class="btn btn-primary" onclick="showDocModal('progress_report')">Create Form</button>
-					<button class="btn btn-outline" onclick="downloadBlankPDF('progress_report')">Download PDF</button>
-				</div>
-			</div>
+
 			<div class="form-card">
 				<h3>Discharge Report</h3>
 				<div class="form-actions">
 					<button class="btn btn-primary" onclick="showDocModal('discharge_report')">Create Form</button>
-					<button class="btn btn-outline" onclick="downloadBlankPDF('discharge_report')">Download PDF</button>
 				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- Upload other documents section -->
+	<div class="documentation-section">
+		<h2>Upload Other Documents</h2>
+		<p>Teachers can upload scanned documents (PDFs, images). Uploaded files are stored and linked to the selected student.</p>
+		<div class="form-row">
+			<div class="form-group">
+				<button class="btn btn-primary" id="btnOpenUpload">Upload Other Document</button>
 			</div>
 		</div>
 	</div>
@@ -122,14 +121,12 @@ if ($selectedStudentId) {
 					<!-- Form content will be loaded here -->
 				</div>
 				<div class="modal-actions">
-					<button type="button" class="btn btn-outline" onclick="closeDocModal()">Cancel</button>
-					<button type="button" class="btn btn-outline" onclick="printDocument()">Print PDF</button>
-					<button type="button" class="btn btn-primary" onclick="saveDocument()">Submit</button>
+					<button type="button" class="btn btn-outline" id="docCancelBtn">Cancel</button>
+					<button type="button" id="printDocBtn" class="btn btn-outline">Print blank PDF</button>
+					<button type="button" id="saveDocBtn" class="btn btn-primary">Submit</button>
 				</div>
 			</div>
 		</div>
 	</div>
 
 </div>
-
-<script src="assets/js/pages/documentation.js"></script>

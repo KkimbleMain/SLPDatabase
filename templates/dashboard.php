@@ -8,16 +8,57 @@ try {
     if (!isset($total_students)) {
         $total_students = (int)$pdo->query('SELECT COUNT(*) FROM students WHERE archived = 0')->fetchColumn();
     }
-    if (!isset($total_goals)) {
-        $total_goals = (int)$pdo->query('SELECT COUNT(*) FROM goals')->fetchColumn();
+
+    // compute total documents across canonical tables
+    if (!isset($total_documents)) {
+        $total_documents = 0;
+        $docTables = ['goals','initial_evaluations','session_reports','other_documents','discharge_reports'];
+        try {
+            foreach ($docTables as $tbl) {
+                $pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=:tbl");
+                $pi->execute([':tbl' => $tbl]);
+                if ($pi->fetchColumn()) {
+                    $st = $pdo->prepare("SELECT COUNT(*) FROM {$tbl} t JOIN students s ON t.student_id = s.id WHERE s.archived = 0");
+                    $st->execute();
+                    $total_documents += (int)$st->fetchColumn();
+                }
+            }
+        } catch (Throwable $e) {
+            // ignore and leave $total_documents as-is
+            $total_documents = $total_documents ?? 0;
+        }
     }
-    if (!isset($recent_sessions)) {
-        $recent_sessions = (int)$pdo->query('SELECT COUNT(*) FROM reports')->fetchColumn();
+
+	// Compute active progress report count (prefer `student_reports`, fall back to legacy `reports`)
+	if (!isset($recent_sessions)) {
+		$recent_sessions = 0;
+		try {
+			$pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='student_reports'");
+			$pi->execute();
+			if ($pi->fetchColumn()) {
+				$st = $pdo->prepare('SELECT COUNT(*) FROM student_reports sr JOIN students s ON sr.student_id = s.id WHERE s.archived = 0');
+				$st->execute();
+				$recent_sessions = (int)$st->fetchColumn();
+			} else {
+				$pj = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='reports'");
+				$pj->execute();
+				if ($pj->fetchColumn()) {
+					$st2 = $pdo->prepare('SELECT COUNT(*) FROM reports r JOIN students s ON r.student_id = s.id WHERE s.archived = 0');
+					$st2->execute();
+					$recent_sessions = (int)$st2->fetchColumn();
+				}
+			}
+		} catch (Throwable $e) {
+			$recent_sessions = $recent_sessions ?? 0;
+		}
+	}
+
+    // Ensure $activeReports is always defined to avoid "Undefined variable" warnings
+    if (!isset($activeReports)) {
+        // prefer a precomputed recent_sessions value when available
+        $activeReports = isset($recent_sessions) ? (int)$recent_sessions : 0;
     }
-    if (!isset($recent_updates)) {
-        // pull some recent progress/update count or sample
-        $recent_updates = (int)$pdo->query('SELECT COUNT(*) FROM progress_updates WHERE created_at >= datetime("now","-30 days")')->fetchColumn();
-    }
+
     if (!isset($user_data) && isset($_SESSION['user_id'])) {
         $stmt = $pdo->prepare('SELECT * FROM users WHERE id = :id LIMIT 1');
         $stmt->execute([':id' => $_SESSION['user_id']]);
@@ -46,25 +87,26 @@ try {
 			<div class="stat-icon">👥</div>
 			<div class="stat-info">
 				<h3>Total Students</h3>
-				<div class="stat-number"><?php echo $total_students; ?></div>
+				<div id="stat-total-students" class="stat-number"><?php echo $total_students; ?></div>
 			</div>
 		</div>
-        
+
 		<div class="stats-card">
-			<div class="stat-icon">🎯</div>
+			<div class="stat-icon">📄</div>
 			<div class="stat-info">
-				<h3>Active Goals</h3>
-				<div class="stat-number"><?php echo $total_goals; ?></div>
+				<h3>Active Documents</h3>
+				<div id="stat-total-documents" class="stat-number"><?php echo $total_documents; ?></div>
 			</div>
 		</div>
         
 		<div class="stats-card">
 			<div class="stat-icon">📈</div>
 			<div class="stat-info">
-				<h3>Recent Reports</h3>
-				<div class="stat-number"><?php echo $recent_sessions; ?></div>
+				<h3>Active Progress Reports</h3>
+				<div id="stat-recent-reports" class="stat-number"><?php echo $activeReports; ?></div>
 			</div>
 		</div>
+
 	</div>
 
 	<div class="dashboard-content">
@@ -89,6 +131,14 @@ try {
 					</div>
 				</a>
 
+				<a href="?view=progress" class="action-card">
+					<div class="action-icon">📈</div>
+					<div class="action-info">
+						<h3>Progress Tracker</h3>
+						<p>Track student skills and session progress</p>
+					</div>
+				</a>
+
 				<a href="?view=settings" class="action-card">
 					<div class="action-icon">⚙️</div>
 					<div class="action-info">
@@ -105,25 +155,83 @@ try {
 			</div>
 			<div class="activity-feed">
 				<?php
-				if (empty($recent_updates)) { ?>
-					<div class="no-activity">
-						<p>No recent activity. Start by adding students and tracking their progress!</p>
-					</div>
-				<?php } else { ?>
-					<?php foreach ($recent_updates as $activity) { ?>
-						<div class="activity-item">
-							<div class="activity-icon"><?php echo $activity['icon']; ?></div>
-							<div class="activity-content">
-								<div class="activity-title">
-									<strong><?php echo htmlspecialchars($activity['title']); ?></strong>
-									<span class="activity-date"><?php echo date('M j, Y', $activity['timestamp']); ?></span>
+				// Render recent activity. Prefer server-side aggregated $recent_activities (from getRecentActivity)
+				try {
+					if (isset($recent_activities) && is_array($recent_activities) && count($recent_activities) > 0) {
+						foreach ($recent_activities as $act) {
+							$icon = htmlspecialchars($act['icon'] ?? '📄');
+							$title = htmlspecialchars($act['title'] ?? ($act['type'] ?? 'Activity'));
+							$desc = htmlspecialchars($act['description'] ?? '');
+							$date = !empty($act['date']) ? date('M j, Y', strtotime($act['date'])) : '';
+							$studentName = htmlspecialchars($act['student_name'] ?? '');
+							?>
+								<div class="activity-item">
+									<div class="activity-icon"><?php echo $icon; ?></div>
+									<div class="activity-content">
+										<div class="activity-title">
+											<strong><?php echo $title; ?></strong>
+											<span class="activity-date"><?php echo $date; ?></span>
+										</div>
+										<div class="activity-description">
+											<?php echo $desc; ?>
+										</div>
+									</div>
 								</div>
-								<div class="activity-description">
-									<?php echo htmlspecialchars($activity['description']); ?>
-								</div>
+							<?php
+						}
+					} else {
+						// fallback: show progress_reports / student_reports as before
+						$items = [];
+						$limit = 10;
+						$pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='progress_reports'"); $pi->execute();
+						if ($pi->fetchColumn()) {
+							$pr = $pdo->prepare('SELECT pr.*, s.first_name, s.last_name FROM progress_reports pr LEFT JOIN students s ON pr.student_id = s.id ORDER BY pr.created_at DESC LIMIT :lim');
+							$pr->bindValue(':lim', $limit, PDO::PARAM_INT); $pr->execute();
+							$items = $pr->fetchAll(PDO::FETCH_ASSOC);
+						} else {
+							$pi2 = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='student_reports'"); $pi2->execute();
+							if ($pi2->fetchColumn()) {
+								$rq = $pdo->prepare('SELECT sr.*, s.first_name, s.last_name FROM student_reports sr LEFT JOIN students s ON sr.student_id = s.id ORDER BY sr.updated_at DESC LIMIT :lim');
+								$rq->bindValue(':lim', $limit, PDO::PARAM_INT); $rq->execute();
+								$items = $rq->fetchAll(PDO::FETCH_ASSOC);
+							}
+						}
+						if (empty($items)) { ?>
+							<div class="no-activity">
+								<p>No recent activity. Start by adding students and creating a progress report.</p>
 							</div>
-						</div>
-					<?php } ?>
+						<?php } else { ?>
+							<?php foreach ($items as $it) {
+								$studentName = trim(($it['first_name'] ?? '') . ' ' . ($it['last_name'] ?? ''));
+								$dateVal = $it['created_at'] ?? ($it['updated_at'] ?? date('c'));
+								$displayDate = htmlspecialchars(date('M j, Y', strtotime($dateVal)));
+								// Build title label (document type + action)
+								$titleLabel = 'progress report created';
+								// Determine document title for description
+								$docTitle = $it['title'] ?? (!empty($it['path']) ? basename($it['path']) : 'Progress Report');
+								$descLabel = $docTitle . ' created for ' . $studentName;
+								?>
+								<div class="activity-item" data-id="<?php echo htmlspecialchars($it['id'] ?? ''); ?>">
+									<div class="activity-icon">📄</div>
+									<div class="activity-content">
+										<div class="activity-title">
+											<strong><?php echo htmlspecialchars($titleLabel); ?></strong>
+											<span class="activity-date"><?php echo $displayDate; ?></span>
+										</div>
+										<div class="activity-description">
+											<?php echo htmlspecialchars($descLabel); ?>
+										</div>
+									</div>
+								</div>
+							<?php } ?>
+						<?php }
+					}
+				} catch (Throwable $e) {
+					// fallback
+					?>
+					<div class="no-activity">
+						<p>No recent activity available.</p>
+					</div>
 				<?php } ?>
 			</div>
 		</div>

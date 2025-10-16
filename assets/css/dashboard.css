@@ -64,11 +64,8 @@
     align-items: center;
     padding: 0.8rem 0.6rem;
     border-bottom: 1px solid var(--light-gray);
-    transition: background 0.12s ease;
-}
-
-.activity-item:hover {
-    background: #fbfcfd;
+    /* No hover transition for recent activity items */
+    transition: none;
 }
 
 .activity-item:last-child {

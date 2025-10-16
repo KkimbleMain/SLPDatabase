@@ -82,14 +82,6 @@ try {
                     </div>
                 </div>
                 <div class="form-group">
-                    <label for="teacher">Teacher *</label>
-                    <input type="text" id="teacher" name="teacher" required>
-                </div>
-                <div class="form-group">
-                    <label for="assignedTherapistName">Assigned Therapist *</label>
-                    <input type="text" id="assignedTherapistName" name="assigned_therapist_name" required placeholder="e.g. Dr. Jane Smith">
-                </div>
-                <div class="form-group">
                     <label for="parentContact">Parent/Guardian Contact *</label>
                     <input type="text" id="parentContact" name="parent_contact" required placeholder="Name and phone/email">
                 </div>
@@ -102,6 +94,108 @@ try {
                     <button type="submit" class="btn btn-primary">Add Student</button>
                 </div>
             </form>
+        </div>
+    </div>
+</template>
+<!-- Progress preview removed: reporting flow now generates PDF directly from the progress page -> server snapshot or client print -->
+
+<!-- delete confirmation template for centralized modals -->
+<template id="tmpl-confirm-delete-skill">
+    <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Delete skill?</h2>
+                <button class="close" type="button" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to delete this skill and all its updates? This cannot be undone.</p>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" type="button">Cancel</button>
+                <button class="btn btn-danger" type="button">Delete</button>
+            </div>
+        </div>
+    </div>
+</template>
+
+<!-- General confirmation modal template -->
+<template id="tmpl-confirm-modal">
+    <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="confirmModalTitle">Confirm Action</h2>
+                <button class="close" type="button" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="confirmModalMessage">Are you sure?</p>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" type="button" id="confirmModalCancel">Cancel</button>
+                <button class="btn btn-danger" type="button" id="confirmModalConfirm">Confirm</button>
+            </div>
+        </div>
+    </div>
+</template>
+
+<!-- Typed confirmation modal: user must enter a specific word to confirm (e.g., DELETE) -->
+<template id="tmpl-typed-confirm-modal">
+    <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="typedConfirmTitle">Confirm Action</h2>
+                <button class="close" type="button" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="typedConfirmMessage">Please type the confirmation text to continue.</p>
+                <div style="margin-top:0.75rem;">
+                    <label for="typedConfirmInput" class="muted" style="display:block;margin-bottom:0.25rem;">Type the exact text to confirm:</label>
+                    <input id="typedConfirmInput" type="text" placeholder="Enter confirmation text" style="width:100%;padding:0.5rem;border:1px solid var(--border-color);border-radius:4px;" />
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" type="button" id="typedConfirmCancel">Cancel</button>
+                <button class="btn btn-danger" type="button" id="typedConfirmConfirm">Confirm</button>
+            </div>
+        </div>
+    </div>
+</template>
+
+<!-- Confirm delete report (separate copy so wording matches report deletion) -->
+<template id="tmpl-confirm-delete-report">
+    <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Delete report?</h2>
+                <button class="close" type="button" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to permanently delete this student's progress report and its associated PDF? This cannot be undone.</p>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" type="button">Cancel</button>
+                <button class="btn btn-danger" type="button">Delete</button>
+            </div>
+        </div>
+    </div>
+</template>
+
+<!-- Progress: History modal template (professional layout) -->
+<template id="tmpl-progress-history">
+    <div class="modal modal-large" role="dialog" aria-modal="true">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="historyTitle">Progress History</h2>
+                <button class="close" type="button" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="history-meta muted" id="historyMeta">Loading...</div>
+                <div class="history-list" id="historyList">
+                    <!-- items rendered here -->
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-outline" type="button">Close</button>
+            </div>
         </div>
     </div>
 </template>
@@ -179,14 +273,7 @@ try {
                         <input type="text" id="editServiceFrequency" name="service_frequency" required placeholder="e.g. 30min weekly">
                     </div>
                 </div>
-                <div class="form-group">
-                    <label for="editTeacher">Teacher *</label>
-                    <input type="text" id="editTeacher" name="teacher" required>
-                </div>
-                <div class="form-group">
-                    <label for="editAssignedTherapistName">Assigned Therapist *</label>
-                    <input type="text" id="editAssignedTherapistName" name="assigned_therapist_name" required placeholder="e.g. Dr. Jane Smith">
-                </div>
+                <!-- Teacher and assigned therapist removed from edit modal (fields migrated out of schema). -->
                 <div class="form-group">
                     <label for="editParentContact">Parent/Guardian Contact *</label>
                     <input type="text" id="editParentContact" name="parent_contact" required placeholder="Name and phone/email">
@@ -225,6 +312,10 @@ try {
                     <input type="text" id="regUsername" name="username" required>
                 </div>
                 <div class="form-group">
+                    <label for="regEmail">Email *</label>
+                    <input type="email" id="regEmail" name="email" required>
+                </div>
+                <div class="form-group">
                     <label for="regPassword">Password *</label>
                     <input type="password" id="regPassword" name="password" required>
                 </div>
@@ -244,17 +335,18 @@ try {
     </div>
 </template>
 
-<template id="tmpl-add-goal">
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="addGoalTitle">
+<template id="tmpl-upload-document">
+    <div id="uploadDocumentModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="uploadDocumentTitle">
         <div class="modal-content">
             <div class="modal-header">
-                <h2 id="addGoalTitle">Add New Goal</h2>
+                <h2 id="uploadDocumentTitle">Upload Other Document</h2>
                 <button class="close" type="button" aria-label="Close">&times;</button>
             </div>
-            <form id="addGoalForm" class="modal-form">
+            <form id="uploadDocumentForm" class="modal-form" enctype="multipart/form-data">
+                <input type="hidden" name="action" value="upload_document">
                 <div class="form-group">
-                    <label for="goalStudent">Student *</label>
-                    <select id="goalStudent" name="student_id" required>
+                    <label for="uploadStudent">Student *</label>
+                    <select id="uploadStudent" name="student_id" required>
                         <option value="">Select student...</option>
                         <?php foreach ($all_students as $s): ?>
                             <option value="<?php echo htmlspecialchars($s['id'] ?? ''); ?>"><?php echo htmlspecialchars(trim(($s['first_name'] ?? '') . ' ' . ($s['last_name'] ?? ''))); ?></option>
@@ -262,62 +354,16 @@ try {
                     </select>
                 </div>
                 <div class="form-group">
-                    <label for="goalDescription">Goal Description *</label>
-                    <textarea id="goalDescription" name="description" rows="3" required></textarea>
+                    <label for="uploadTitle">Title *</label>
+                    <input type="text" id="uploadTitle" name="title" required>
                 </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="goalTargetDate">Target Date</label>
-                        <input type="date" id="goalTargetDate" name="target_date">
-                    </div>
-                    <div class="form-group">
-                        <label for="goalNotes">Notes</label>
-                        <input type="text" id="goalNotes" name="notes">
-                    </div>
+                <div class="form-group">
+                    <label for="uploadFile">File *</label>
+                    <input type="file" id="uploadFile" name="file" accept=".pdf,image/*" required>
                 </div>
                 <div class="modal-actions">
                     <button type="button" class="btn btn-outline">Cancel</button>
-                    <button type="submit" class="btn btn-primary">Create Goal</button>
-                </div>
-            </form>
-        </div>
-    </div>
-</template>
-
-<template id="tmpl-add-progress">
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="addProgressTitle">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2 id="addProgressTitle">Add Progress Report</h2>
-                <button class="close" type="button" aria-label="Close">&times;</button>
-            </div>
-            <form id="addProgressForm" class="modal-form">
-                <div class="form-group">
-                    <label for="progressStudent">Student *</label>
-                    <select id="progressStudent" name="student_id" required>
-                        <option value="">Select student...</option>
-                        <?php foreach ($all_students as $s): ?>
-                            <option value="<?php echo htmlspecialchars($s['id'] ?? ''); ?>"><?php echo htmlspecialchars(trim(($s['first_name'] ?? '') . ' ' . ($s['last_name'] ?? ''))); ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="progressDate">Date</label>
-                        <input type="date" id="progressDate" name="date_recorded" value="<?php echo date('Y-m-d'); ?>">
-                    </div>
-                    <div class="form-group">
-                        <label for="progressScore">Score (%)</label>
-                        <input type="number" id="progressScore" name="score" min="0" max="100" step="0.1">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label for="progressNotes">Notes</label>
-                    <textarea id="progressNotes" name="notes" rows="3"></textarea>
-                </div>
-                <div class="modal-actions">
-                    <button type="button" class="btn btn-outline">Cancel</button>
-                    <button type="submit" class="btn btn-primary">Save Report</button>
+                    <button type="submit" class="btn btn-primary">Upload</button>
                 </div>
             </form>
         </div>
@@ -325,7 +371,7 @@ try {
 </template>
 
 <template id="tmpl-student-profile">
-    <div class="modal" role="dialog" aria-modal="true">
+    <div class="modal modal-large" role="dialog" aria-modal="true">
         <div class="modal-content">
             <div class="modal-header">
                 <h2 id="studentProfileTitle">Student Profile</h2>
@@ -335,6 +381,9 @@ try {
                 <p>Loading...</p>
             </div>
             <div class="modal-actions">
+                <button id="studentProfileBackBtn" type="button" class="btn btn-outline">Back to Students</button>
+                <button id="studentProfileDocsBtn" type="button" class="btn btn-secondary">Documentation</button>
+                <button id="studentProfileEditBtn" type="button" class="btn btn-primary">Edit Profile</button>
                 <button type="button" class="btn btn-outline">Close</button>
             </div>
         </div>
@@ -358,6 +407,298 @@ try {
                     <button type="submit" class="btn btn-primary">Send Reset Link</button>
                 </div>
             </form>
+        </div>
+    </div>
+</template>
+
+<!-- Documentation form templates (moved from documentation.js to server-side templates) -->
+<template id="tmpl-doc-initial_evaluation">
+    <div class="modal modal-large" role="dialog" aria-modal="true">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Initial Evaluation</h2>
+                <button class="close" type="button" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body doc-form" data-form-type="initial_evaluation">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="studentName">Student Name:</label>
+                        <select id="studentName" name="studentName" required>
+                            <option value="">Select Student</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="evaluationDate">Evaluation Date:</label>
+                        <input type="date" id="evaluationDate" name="evaluationDate" required>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="referralReason">Reason for Referral:</label>
+                    <textarea id="referralReason" name="referralReason" rows="3" required></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="backgroundInfo">Background Information:</label>
+                    <textarea id="backgroundInfo" name="backgroundInfo" rows="4" required></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="assessmentResults">Assessment Results:</label>
+                    <textarea id="assessmentResults" name="assessmentResults" rows="5" required></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="recommendations">Recommendations:</label>
+                    <textarea id="recommendations" name="recommendations" rows="4" required></textarea>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-outline">Cancel</button>
+                <button type="button" id="saveDocBtn" class="btn btn-primary">Submit</button>
+                <button type="button" id="printDocBtn" class="btn btn-outline">Print blank PDF</button>
+            </div>
+        </div>
+    </div>
+</template>
+
+<template id="tmpl-doc-goals_form">
+    <div class="modal modal-large" role="dialog" aria-modal="true">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Goals Form</h2>
+                <button class="close" type="button" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body doc-form" data-form-type="goals_form">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="studentName">Student Name:</label>
+                        <select id="studentName" name="studentName" required>
+                            <option value="">Select Student</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="goalDate">Goal Date:</label>
+                        <input type="date" id="goalDate" name="goalDate" required>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="longTermGoals">Long Term Goals:</label>
+                    <textarea id="longTermGoals" name="longTermGoals" rows="4" required></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="shortTermObjectives">Short Term Objectives:</label>
+                    <textarea id="shortTermObjectives" name="shortTermObjectives" rows="4" required></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="interventionStrategies">Intervention Strategies:</label>
+                    <textarea id="interventionStrategies" name="interventionStrategies" rows="3" required></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="measurementCriteria">Measurement Criteria:</label>
+                    <textarea id="measurementCriteria" name="measurementCriteria" rows="3" required></textarea>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-outline">Cancel</button>
+                <button type="button" id="saveDocBtn" class="btn btn-primary">Submit</button>
+                <button type="button" id="printDocBtn" class="btn btn-outline">Print blank PDF</button>
+            </div>
+        </div>
+    </div>
+</template>
+
+<template id="tmpl-doc-session_report">
+    <div class="modal modal-large" role="dialog" aria-modal="true">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Session Report</h2>
+                <button class="close" type="button" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body doc-form" data-form-type="session_report">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="studentName">Student Name:</label>
+                        <select id="studentName" name="studentName" required>
+                            <option value="">Select Student</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="sessionDate">Session Date:</label>
+                        <input type="date" id="sessionDate" name="sessionDate" required>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="sessionDuration">Duration (minutes):</label>
+                        <input type="number" id="sessionDuration" name="sessionDuration" min="1" max="480" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="sessionType">Session Type:</label>
+                        <select id="sessionType" name="sessionType" required>
+                            <option value="individual">Individual</option>
+                            <option value="group">Group</option>
+                            <option value="consultation">Consultation</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="objectivesTargeted">Objectives Targeted:</label>
+                    <textarea id="objectivesTargeted" name="objectivesTargeted" rows="3" required></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="activitiesUsed">Activities/Materials Used:</label>
+                    <textarea id="activitiesUsed" name="activitiesUsed" rows="3" required></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="studentResponse">Student Response/Performance:</label>
+                    <textarea id="studentResponse" name="studentResponse" rows="4" required></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="nextSessionPlan">Plan for Next Session:</label>
+                    <textarea id="nextSessionPlan" name="nextSessionPlan" rows="3" required></textarea>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-outline">Cancel</button>
+                <button type="button" id="saveDocBtn" class="btn btn-primary">Submit</button>
+                <button type="button" id="printDocBtn" class="btn btn-outline">Print blank PDF</button>
+            </div>
+        </div>
+    </div>
+</template>
+<!-- Progress report template removed: progress reporting deprecated for now -->
+
+<template id="tmpl-doc-discharge_report">
+    <div class="modal modal-large" role="dialog" aria-modal="true">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Discharge Report</h2>
+                <button class="close" type="button" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body doc-form" data-form-type="discharge_report">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="studentName">Student Name:</label>
+                        <select id="studentName" name="studentName" required>
+                            <option value="">Select Student</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="dischargeDate">Discharge Date:</label>
+                        <input type="date" id="dischargeDate" name="dischargeDate" required>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="servicesSummary">Summary of Services Provided:</label>
+                    <textarea id="servicesSummary" name="servicesSummary" rows="4" required></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="goalsAchieved">Goals Achieved:</label>
+                    <textarea id="goalsAchieved" name="goalsAchieved" rows="3" required></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="dischargeReason">Reason for Discharge:</label>
+                    <textarea id="dischargeReason" name="dischargeReason" rows="3" required></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="followUpRecommendations">Follow-up Recommendations:</label>
+                    <textarea id="followUpRecommendations" name="followUpRecommendations" rows="3" required></textarea>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-outline">Cancel</button>
+                <button type="button" id="saveDocBtn" class="btn btn-primary">Submit</button>
+                <button type="button" id="printDocBtn" class="btn btn-outline">Print blank PDF</button>
+            </div>
+        </div>
+    </div>
+</template>
+
+<!-- Progress: Add/Update Score modal template -->
+<template id="tmpl-progress-add-update">
+    <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Select a current score</h2>
+                <button class="close" type="button" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-form">
+                <div class="form-group">
+                    <label for="scoreVal">Current score</label>
+                    <input id="scoreVal" type="number" min="0" max="100" value="50" />
+                    <div class="field-error" id="scoreValError" aria-live="polite"></div>
+                </div>
+                <div class="form-group">
+                    <label for="targetVal">Target score</label>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <input id="targetVal" type="number" min="0" max="100" value="80" />
+                        <input id="targetValRange" type="range" min="0" max="100" value="80" />
+                        <button id="targetValLock" class="btn icon-btn" type="button" aria-pressed="false" title="Toggle target lock">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M12 17a2 2 0 1 0 0-4 2 2 0 0 0 0 4z" fill="#111827"/><path d="M17 8V7a5 5 0 0 0-10 0v1" stroke="#111827" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><rect x="4" y="8" width="16" height="12" rx="2" stroke="#111827" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </button>
+                        <span id="targetValLockLabel" class="lock-status">Locked</span>
+                    </div>
+                    <div class="field-error" id="targetValError" aria-live="polite"></div>
+                </div>
+                <div class="form-group">
+                    <label for="notes">Notes (optional)</label>
+                    <textarea id="notes" placeholder="Notes (optional)"></textarea>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn btn-secondary" type="button">Cancel</button>
+                    <button class="btn btn-primary" type="button">Submit</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</template>
+<!-- Progress: Add Skill modal template -->
+<template id="tmpl-progress-add-skill">
+    <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Add Skill</h2>
+                <button class="close" type="button" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-form">
+                <div class="form-group">
+                    <label for="skillCategory">Skill category</label>
+                    <select id="skillCategory" name="category">
+                        <option value="">Select category...</option>
+                        <option value="Articulation">Articulation</option>
+                        <option value="Fluency">Fluency</option>
+                        <option value="Language">Language</option>
+                        <option value="Social Communication">Social communication</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="skillLabel">Skill label</label>
+                    <input id="skillLabel" list="skillLabelSuggestions" type="text" placeholder="e.g. B sound - cvc, short phrases, problem solving, WH - questions" />
+                </div>
+                <div class="form-group">
+                    <label for="skillCurrentNum">Current (%)</label>
+                    <input id="skillCurrentNum" type="number" min="0" max="100" />
+                    <input id="skillCurrentRange" type="range" min="0" max="100" value="50" />
+                    <div class="field-error" id="skillCurrentNumError" aria-live="polite"></div>
+                </div>
+                <div class="form-group">
+                    <label for="skillTargetNum">Target (%)</label>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <input id="skillTargetNum" type="number" min="0" max="100" />
+                        <input id="skillTargetRange" type="range" min="0" max="100" value="80" />
+                        <button id="skillTargetLock" class="btn icon-btn" type="button" aria-pressed="false" title="Toggle target lock">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M12 17a2 2 0 1 0 0-4 2 2 0 0 0 0 4z" fill="#111827"/><path d="M17 8V7a5 5 0 0 0-10 0v1" stroke="#111827" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><rect x="4" y="8" width="16" height="12" rx="2" stroke="#111827" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </button>
+                        <span id="targetValLockLabel" class="lock-status">Locked</span>
+                    </div>
+                    <div class="field-error" id="skillTargetNumError" aria-live="polite"></div>
+                </div>
+                <div class="form-group">
+                    <label for="skillNotes">Notes (optional)</label>
+                    <textarea id="skillNotes" placeholder="Notes (optional)"></textarea>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn btn-secondary" type="button">Cancel</button>
+                    <button class="btn btn-primary" type="button">Add Skill</button>
+                </div>
+            </div>
         </div>
     </div>
 </template>

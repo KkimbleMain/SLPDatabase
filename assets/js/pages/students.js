@@ -6,30 +6,10 @@ export function showAddStudentModal(preselectId) {
     if (!tpl) return;
     const clone = tpl.content.cloneNode(true);
 
-    // ensure unique ids in the cloned template to avoid collisions
-    clone.querySelectorAll('[id]').forEach(el => {
-        const oldId = el.id;
-        const newId = oldId + '-' + Math.floor(Math.random() * 100000);
-        el.id = newId;
-        // update labels that referenced the old id
-        clone.querySelectorAll(`label[for="${oldId}"]`).forEach(lbl => lbl.setAttribute('for', newId));
-        // update aria-labelledby that reference the old id
-        clone.querySelectorAll(`[aria-labelledby="${oldId}"]`).forEach(a => a.setAttribute('aria-labelledby', newId));
-    });
-
-    // Remove any inline onclick handlers in the clone that target static ids and attach scoped listeners instead
-    clone.querySelectorAll('[onclick]').forEach(btn => {
-        const onclick = btn.getAttribute('onclick') || '';
-        if (onclick.includes("document.getElementById('studentModal')") || onclick.includes('studentModal')) {
-            btn.removeAttribute('onclick');
-        }
-    });
-
     // Insert modal via central helper which attaches close handlers and backdrop
-    insertModal(clone);
-
-    // ensure date-of-birth cannot be set to today or a future date
-    const modalRoot = document.querySelector('.modal') || clone;
+    // insertModal returns the inserted modal element (or wrapper)
+    const inserted = insertModal(clone);
+    const modalRoot = inserted || document.querySelector('.modal') || clone;
     const dobInput = modalRoot.querySelector('input[name="date_of_birth"]');
     if (dobInput) {
         try { dobInput.type = 'text'; dobInput.readOnly = true; } catch (e) { /* ignore */ }
@@ -61,9 +41,15 @@ export function showAddStudentModal(preselectId) {
         if (hid) hid.value = preselectId;
     }
 
-    // Attach submit handler scoped to this clone's form
-    const form = clone.querySelector('form');
-    if (form) form.addEventListener('submit', submitStudentForm);
+    // Attach submit handler scoped to this inserted modal's form
+    const form = modalRoot.querySelector('form');
+    if (form) {
+        // Avoid double-binding if the fallback modal-local handler already exists
+        if (!form.dataset.slpSubmitBound) {
+            form.addEventListener('submit', submitStudentForm);
+            form.dataset.slpSubmitBound = '1';
+        }
+    }
 }
 
 async function submitStudentForm(e) {
@@ -139,6 +125,8 @@ async function submitStudentForm(e) {
             setTimeout(() => {
                 window.location.href = '?view=students';
             }, 700);
+            // Refresh recent activity so the dashboard shows the new student immediately
+            try { if (typeof window.refreshRecentActivity === 'function') window.refreshRecentActivity(20); } catch (e) { /* ignore */ }
         } else {
             const errMsg = (result && result.error) ? result.error : 'Failed to add student';
             showNotification(errMsg, 'error');
@@ -169,37 +157,278 @@ function init() {
     // search box filtering
     const search = document.getElementById('studentSearch');
     if (search) {
-        search.addEventListener('input', () => {
-            const q = search.value.trim().toLowerCase();
-            document.querySelectorAll('.students-grid > div').forEach(card => {
-                const name = (card.textContent || '').toLowerCase();
-                card.style.display = q && !name.includes(q) ? 'none' : '';
+        // Use a unified filter that takes into account name search and grade filter
+        const gradeFilterEl = document.getElementById('gradeFilter');
+        function applyFilters() {
+            const q = (search.value || '').trim().toLowerCase();
+            const grade = gradeFilterEl ? gradeFilterEl.value : '';
+
+            const rows = Array.from(document.querySelectorAll('.student-row'));
+            let anyVisible = false;
+
+            rows.forEach(row => {
+                const nameEl = row.querySelector('.student-name');
+                const name = nameEl ? (nameEl.textContent || '').trim().toLowerCase() : (row.textContent || '').toLowerCase();
+                const rowGradeSection = row.closest('.grade-section');
+                const rowGrade = rowGradeSection ? (rowGradeSection.getAttribute('data-grade') || '') : '';
+
+                const matchesQuery = !q || name.includes(q);
+                const matchesGrade = !grade || String(rowGrade) === String(grade);
+
+                const show = matchesQuery && matchesGrade;
+                row.style.display = show ? '' : 'none';
+                if (show) anyVisible = true;
             });
-        });
+
+            // Hide grade sections that ended up empty
+            document.querySelectorAll('.grade-section').forEach(section => {
+                const visibleRows = section.querySelectorAll('.grade-students > .student-row:not([style*="display: none"])');
+                section.style.display = visibleRows.length ? '' : 'none';
+            });
+
+            // Show a no-results message if nothing matches
+            let noResults = document.getElementById('studentsNoResults');
+            const container = document.querySelector('.students-by-grade');
+            if (!noResults && container) {
+                noResults = document.createElement('div');
+                noResults.id = 'studentsNoResults';
+                noResults.className = 'no-students muted';
+                noResults.innerHTML = '<div class="no-students-icon">🔍</div><h3>No matching students</h3><p>No students match your search criteria.</p>';
+                noResults.style.display = 'none';
+                container.parentNode.insertBefore(noResults, container.nextSibling);
+            }
+            if (noResults) noResults.style.display = anyVisible ? 'none' : '';
+        }
+
+        search.addEventListener('input', applyFilters);
+        // apply immediately in case there's a prefilled search
+        applyFilters();
     }
 
     const gradeFilter = document.getElementById('gradeFilter');
     if (gradeFilter) {
 
+        // Ensure grade changes also apply unified filters
+        gradeFilter.addEventListener('change', () => {
+            const ev = new Event('input');
+            const searchEl = document.getElementById('studentSearch');
+            // reuse applyFilters if available by triggering input event; otherwise run simple filter
+            if (searchEl) searchEl.dispatchEvent(ev);
+        });
+
 // Additional helpers used by templates
 window.exportStudent = async function(id) {
-    try {
-        const fd = new FormData(); fd.append('action','export_student_html'); fd.append('id', String(id));
-        const res = await fetch('/includes/submit.php', { method: 'POST', body: fd });
-        const data = await res.json();
-        if (data && data.success && data.html) {
-            const w = window.open();
-            w.document.write(data.html);
-            w.document.close();
-            // allow user to print/save from opened window
-        } else {
-            alert('Export failed: ' + (data.error || 'unknown'));
+        try {
+        // Always regenerate the student report so template edits are reflected immediately.
+        // Prefer the server-side full progress report (generate_student_report). This includes profile, goals, docs, and progress.
+        try {
+            // Collect any visible skill chart canvases into data URLs and attach as multipart FormData
+            const dataURLToBlob = (dataURL) => {
+                if (!dataURL) return null;
+                const parts = dataURL.split(',');
+                const meta = parts[0].match(/:(.*?);/);
+                const mime = meta ? meta[1] : 'image/png';
+                const bstr = atob(parts[1]);
+                let n = bstr.length; const u8 = new Uint8Array(n);
+                while (n--) u8[n] = bstr.charCodeAt(n);
+                return new Blob([u8], { type: mime });
+            };
+
+            // Collect chart canvases into dataURLs. Retry a few times (short delay) so
+            // charts that are still rendering (new skills) get picked up.
+            const collectCharts = async () => {
+                const maxAttempts = 6;
+                const delayMs = 150;
+                let lastMap = {};
+                // Gather the list of skill-card ids to aim for
+                const cards = Array.from(document.querySelectorAll('.skill-card')).filter(c => !c.classList.contains('add-skill-card'));
+                const targetIds = cards.map(c => c.dataset.skillId).filter(Boolean);
+
+                for (let attempt = 0; attempt < maxAttempts; attempt++) {
+                    const chartMap = {};
+                    for (const card of cards) {
+                        const sid = card.dataset.skillId;
+                        if (!sid) continue;
+                        const canvas = document.getElementById('skillChart-' + sid) || card.querySelector('canvas');
+                        if (canvas && typeof canvas.toDataURL === 'function') {
+                            try { chartMap[sid] = canvas.toDataURL('image/png'); } catch (err) { console.warn('toDataURL failed for skill', sid, err); }
+                        }
+                    }
+                    // If we've captured charts for all target ids, return immediately
+                    const keys = Object.keys(chartMap);
+                    if (targetIds.length === 0 || keys.length === targetIds.length) return chartMap;
+                    // If this attempt made progress, remember it and retry for missing ones
+                    if (keys.length > Object.keys(lastMap).length) lastMap = chartMap;
+                    // wait a short moment before trying again
+                    await new Promise(r => setTimeout(r, delayMs));
+                }
+                // return whatever we captured on the last attempt
+                return lastMap;
+            };
+
+            let chartMap = await collectCharts();
+            // If no charts found, wait a short moment and retry once — helps when Chart.js finishes rendering slightly later
+            if (Object.keys(chartMap).length === 0) {
+                await new Promise(res => setTimeout(res, 300));
+                chartMap = await collectCharts();
+            }
+            // If some skills were not captured (no canvas present or not yet rendered),
+            // attempt to fetch the skill list and render missing charts into temporary
+            // canvases using Chart.js (when available). This ensures newly-added skills
+            // are included in exports even if their live card isn't present.
+            try {
+                // fetch canonical skills for this student
+                const skillsResp = await fetch('/includes/submit.php', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ action: 'get_student_skills', student_id: String(id) }) });
+                const skillsJson = await skillsResp.json();
+                if (skillsJson && skillsJson.success && Array.isArray(skillsJson.skills)) {
+                    const skillIds = skillsJson.skills.map(s => String(s.id));
+                    const missing = skillIds.filter(sid => !Object.prototype.hasOwnProperty.call(chartMap, sid));
+                    if (missing.length && window.Chart) {
+                        for (const mid of missing) {
+                            try {
+                                // fetch updates for the missing skill
+                                const updResp = await fetch('/includes/submit.php', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ action: 'get_skill_updates', skill_id: String(mid) }) });
+                                const updJson = await updResp.json();
+                                if (!updJson || !updJson.success || !Array.isArray(updJson.updates) || updJson.updates.length === 0) continue;
+                                const updates = updJson.updates;
+                                // Use local date formatting and normalize percent values
+                                const labels = updates.map(u => {
+                                    try { const d = u.date_recorded || u.created_at || ''; return (function(v){ if(!v) return ''; const dd = new Date(v); if (isNaN(dd.getTime())) return ''; const pad=(n)=>String(n).padStart(2,'0'); return `${dd.getFullYear()}-${pad(dd.getMonth()+1)}-${pad(dd.getDate())}`; })(d); } catch (e) { return ''; }
+                                });
+                                const dataPoints = updates.map(u => { const n = (function(v){ if (v===null||typeof v==='undefined'||v==='') return NaN; const nv = Number(String(v).trim().replace('%','')); return isNaN(nv) ? NaN : ((nv>0&&nv<=1)?(nv*100):nv); })(u.score); return isNaN(n) ? null : n; });
+                                try { if (window.SLP_DEBUG_CHARTS) { console.debug('[SLP_DEBUG] missing-skill', mid, 'raw scores', updates.map(u => u.score)); console.debug('[SLP_DEBUG] missing-skill', mid, 'parsed dataPoints', dataPoints); } } catch(e) {}
+                                // temporary canvas
+                                const tmp = document.createElement('canvas'); tmp.width = 600; tmp.height = 240; tmp.style.position = 'fixed'; tmp.style.left = '-9999px'; tmp.style.top = '-9999px'; document.body.appendChild(tmp);
+                                const ctx = tmp.getContext('2d');
+                                const chart = new Chart(ctx, {
+                                    type: 'line',
+                                    data: { labels: labels, datasets: [{ label: 'Score', data: dataPoints, borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)', tension: 0.35, fill: true, pointRadius: 3 }] },
+                                    options: { responsive: false, maintainAspectRatio: false, scales: { y: { beginAtZero: true, min: 0, max: 100 } }, plugins: { legend: { display: false } } }
+                                });
+                                // wait briefly for Chart to render
+                                await new Promise(r => setTimeout(r, 120));
+                                try { chartMap[mid] = tmp.toDataURL('image/png'); } catch (e) { /* ignore */ }
+                                try { chart.destroy(); } catch (e) {}
+                                try { tmp.remove(); } catch (e) { try { document.body.removeChild(tmp); } catch(e2){} }
+                            } catch (e) { console.warn('Could not render chart for missing skill', mid, e); }
+                        }
+                    }
+                }
+            } catch (e) { /* non-fatal: continue with whatever chartMap we have */ }
+
+            // Build FormData so we can attach blobs for each chart (server expects chart_images JSON + optional files)
+            const fdGen = new FormData();
+            fdGen.append('action', 'generate_student_report');
+            fdGen.append('student_id', String(id));
+            try { fdGen.append('chart_images', JSON.stringify(chartMap)); } catch (e) { /* ignore */ }
+            for (const [cid, dataUrl] of Object.entries(chartMap)) {
+                try { const blob = dataURLToBlob(dataUrl); if (blob) fdGen.append('chart_image_' + cid, blob, 'chart_' + cid + '.png'); } catch (e) { console.warn('attach blob failed for chart', cid, e); }
+            }
+
+            const resGen = await fetch('/includes/submit.php', { method: 'POST', body: fdGen, credentials: 'same-origin' });
+            const gen = await resGen.json();
+            if (gen && gen.success && gen.path) {
+                const url = '/' + gen.path.replace(/^\/+/,'');
+                try {
+                    // try to fetch the HTML snapshot and show it in a printable modal
+                    const resp = await fetch(url, { credentials: 'same-origin' });
+                    const html = await resp.text();
+                    const modalFrag = document.createRange().createContextualFragment(`<div class="modal"><div class="modal-content modal-wide"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><strong>Printable Preview</strong><div><button class="close">&times;</button></div></div><iframe id="previewFrame" style="width:100%;height:84vh;border:1px solid #ddd;border-radius:6px;background:#fff"></iframe><div style="display:flex;justify-content:flex-end;margin-top:8px;"><button id="previewPrintBtn" class="btn btn-primary">Print</button></div></div></div>`);
+                    const modalEl = insertModal(modalFrag);
+                    const frame = modalEl.querySelector('#previewFrame');
+                    // Use iframe.src to preserve base URL so relative resources (chart images, embedded docs) resolve correctly.
+                    try {
+                        frame.src = url;
+                    } catch (e) {
+                        // Fallback to injecting the HTML when direct src assignment fails
+                        try { frame.srcdoc = html; } catch (e2) { frame.contentWindow.document.open(); frame.contentWindow.document.write(html); frame.contentWindow.document.close(); }
+                    }
+                    const prbtn = modalEl.querySelector('#previewPrintBtn');
+                    if (prbtn) prbtn.addEventListener('click', async () => {
+                        try {
+                            // If the preview contains embedded PDFs, they often have their own scroll and
+                            // do not print via iframe.print() reliably. Offer to open PDFs in new tabs
+                            // for printing instead.
+                            const doPrintPreview = () => {
+                                if (frame.contentWindow && frame.contentDocument && frame.contentDocument.readyState === 'complete') {
+                                    frame.contentWindow.focus(); frame.contentWindow.print();
+                                } else {
+                                    frame.addEventListener('load', function onload() { frame.removeEventListener('load', onload); try { frame.contentWindow.focus(); frame.contentWindow.print(); } catch (e) { showNotification('Unable to print preview', 'error'); } });
+                                }
+                            };
+
+                            let foundPdf = false;
+                            try {
+                                const doc = frame.contentDocument || (frame.contentWindow && frame.contentWindow.document);
+                                if (doc) {
+                                    const embeds = Array.from(doc.querySelectorAll('embed[type="application/pdf"], object[type="application/pdf"], iframe[src$=".pdf"]'));
+                                                    if (embeds.length) {
+                                                        foundPdf = true;
+                                                        // Ask user whether they'd like to open PDFs in new tabs for printing
+                                                        const ok = await (window.showConfirm ? window.showConfirm('This report contains embedded PDF(s) which may not print correctly from the preview. Open the PDF(s) in new tab(s) for printing? Click Cancel to print the preview anyway.') : Promise.resolve(confirm('This report contains embedded PDF(s) which may not print correctly from the preview. Open the PDF(s) in new tab(s) for printing? Click Cancel to print the preview anyway.')));
+                                                        if (ok) {
+                                            // Open each PDF in a new tab (user gesture — should not be blocked)
+                                            embeds.forEach(el => {
+                                                let src = el.getAttribute('src') || el.getAttribute('data') || el.getAttribute('href');
+                                                if (!src && el.querySelector && el.querySelector('embed')) src = el.querySelector('embed').getAttribute('src');
+                                                if (!src) return;
+                                                try {
+                                                    // Resolve relative URLs against the snapshot URL
+                                                    const abs = new URL(src, url).href;
+                                                    window.open(abs, '_blank');
+                                                } catch (e) {
+                                                    try { window.open(src, '_blank'); } catch (ee) { /* ignore */ }
+                                                }
+                                            });
+                                            return; // user opted to print PDFs separately
+                                        }
+                                    }
+                                }
+                            } catch (e) {
+                                console.warn('Could not inspect preview iframe for embedded PDFs', e);
+                            }
+
+                            // If no embedded PDFs or user chose to continue, print the preview iframe
+                            doPrintPreview();
+                        } catch (e) { showNotification('Unable to print preview', 'error'); }
+                    });
+                    return;
+                } catch (err) {
+                    // fallback to opening in a new tab if fetch or modal fails
+                    try { window.open(url, '_blank'); return; } catch(e) { window.open(url, '_blank'); return; }
+                }
+            }
+
+            // If PDF engine missing or generation failed, try saving an HTML snapshot instead
+            if (gen && gen.error && (gen.error === 'PDF engine missing' || gen.error === 'PDF generation disabled' || gen.error === 'PDF generation failed')) {
+                try {
+                    const fdSnap = new URLSearchParams(); fdSnap.append('action','save_student_report_snapshot'); fdSnap.append('student_id', String(id));
+                    const resSnap = await fetch('/includes/submit.php', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: fdSnap.toString() });
+                    const snap = await resSnap.json();
+                    if (snap && snap.success && snap.path) {
+                        const url2 = '/' + snap.path.replace(/^\/+/, '');
+                        window.open(url2, '_blank');
+                        return;
+                    }
+                    alert((snap && (snap.error || snap.message)) ? (snap.error || snap.message) : 'Could not create HTML snapshot');
+                    return;
+                } catch (se) { console.error('Snapshot failed', se); alert('Snapshot generation failed'); return; }
+            }
+
+            // Generic fallback: show server error if present
+            alert((gen && (gen.error || gen.message)) ? (gen.error || gen.message) : 'Student report not found or export unavailable');
+            return;
+        } catch (e) {
+            console.error('generate_student_report failed', e);
+            alert('Export failed: ' + (e && e.message ? e.message : 'Unknown error'));
+            return;
         }
     } catch (e) { console.error(e); alert('Export failed'); }
 };
 
 window.archiveStudent = async function(id) {
-    if (!confirm('Archive this student? They will be hidden from lists but can be restored.')) return;
+    const ok = await (window.showConfirm ? window.showConfirm('Archive this student? They will be hidden from lists but can be restored.') : Promise.resolve(confirm('Archive this student? They will be hidden from lists but can be restored.')));
+    if (!ok) return;
     try {
         const fd = new FormData(); fd.append('action','archive_student'); fd.append('id', String(id));
         const res = await fetch('/includes/submit.php', { method: 'POST', body: fd });
@@ -213,68 +442,100 @@ window.openStudentDocs = function(id) {
     location.href = '?view=documentation&student_id=' + encodeURIComponent(String(id));
 };
 
-window.viewProfile = function(id) {
-    try {
-        // find student info from DOM (dataset) or fetch clients-side students.json
-        (async function(){
-            let student = null;
-            try {
-                const fd = new URLSearchParams();
-                fd.append('action', 'get_students');
-                fd.append('archived', '0');
-                const res = await fetch('/includes/submit.php', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: fd.toString()
-                });
-                if (res.ok) {
-                    const arr = await res.json();
-                    student = arr.find(s => String(s.id) === String(id));
+    if (typeof window.viewProfile !== 'function') {
+    window.viewProfile = function(id) {
+        try {
+            (async function(){
+                // Fetch student record
+                let student = null;
+                try {
+                    const fd = new URLSearchParams(); fd.append('action','get_student'); fd.append('id', String(id));
+                    const res = await fetch('/includes/submit.php', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: fd.toString() });
+                    const json = await res.json(); if (json && json.success) student = json.student;
+                } catch (e) { console.warn('Could not fetch student', e); }
+
+                // Fetch document/forms to compute counts (best-effort)
+                let counts = { session_report:0, initial_evaluation:0, discharge_report:0, other_documents:0, goals:0 };
+                try {
+                    const fd2 = new URLSearchParams(); fd2.append('action','get_student_forms'); fd2.append('student_id', String(id));
+                    const res2 = await fetch('/includes/submit.php', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: fd2.toString() });
+                    const list = await res2.json();
+                    if (list && list.success && Array.isArray(list.forms)) {
+                        list.forms.forEach(f => {
+                            const t = f.form_type || (f.form_type === null && f.title ? f.title.toLowerCase() : 'other');
+                            if (t === 'session_report' || t === 'session') counts.session_report++;
+                            else if (t === 'initial_evaluation' || t === 'initial_profile') counts.initial_evaluation++;
+                            else if (t === 'discharge_report' || t === 'discharge') counts.discharge_report++;
+                            else if (t === 'goals_form' || t === 'goals') counts.goals++;
+                            else counts.other_documents++;
+                        });
+                    }
+                } catch (e) { console.warn('Could not fetch student forms for counts', e); }
+
+                // Check for active progress report metadata
+                let hasReport = false;
+                try {
+                    const fd3 = new URLSearchParams(); fd3.append('action','get_student_report'); fd3.append('student_id', String(id));
+                    const res3 = await fetch('/includes/submit.php', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: fd3.toString() });
+                    const rj = await res3.json(); if (rj && rj.success && rj.report) hasReport = true;
+                } catch (e) { console.warn('Could not fetch student report metadata', e); }
+
+                // Also fetch progress skills so the modal shows up-to-date skill list
+                let skills = [];
+                try {
+                    const fdSkills = new URLSearchParams(); fdSkills.append('action', 'get_student_skills'); fdSkills.append('student_id', String(id));
+                    const resSkills = await fetch('/includes/submit.php', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: fdSkills.toString() });
+                    const sj = await resSkills.json(); if (sj && sj.success && Array.isArray(sj.skills)) skills = sj.skills;
+                } catch (e) { console.warn('Could not fetch student skills', e); }
+
+                const tmpl = document.getElementById('tmpl-student-profile');
+                if (!tmpl) { alert('Profile template missing'); return; }
+                const clone = tmpl.content.firstElementChild.cloneNode(true);
+                const body = clone.querySelector('#studentProfileBody');
+                if (!student) {
+                    body.innerHTML = '<p>Student not found.</p>';
+                } else {
+                    // Render simplified profile: basic fields + counts + active report flag
+                    const assignedName = (student.assigned_therapist_name || '') || (student.assigned_therapist ? String(student.assigned_therapist) : 'Unassigned');
+                    body.innerHTML = `
+                        <h3>${escapeHtml(student.first_name || '')} ${escapeHtml(student.last_name || '')}</h3>
+                        <p><strong>Student ID:</strong> ${escapeHtml(student.student_id || student.id || '')}</p>
+                        <p><strong>Grade:</strong> ${escapeHtml(student.grade || '')}</p>
+                        <p><strong>DOB:</strong> ${escapeHtml(student.date_of_birth || '')}</p>
+                        <p><strong>Primary language:</strong> ${escapeHtml(student.primary_language || '')}</p>
+                        <p><strong>Assigned Therapist:</strong> ${escapeHtml(assignedName)}</p>
+                        <hr />
+                        <h4>Documents</h4>
+                        <ul>
+                            <li>Session reports: ${counts.session_report}</li>
+                            <li>Initial evaluations/profiles: ${counts.initial_evaluation}</li>
+                            <li>Discharge reports: ${counts.discharge_report}</li>
+                            <li>Other documents: ${counts.other_documents}</li>
+                            <li>Goals forms: ${counts.goals}</li>
+                        </ul>
+                        <p>
+                            <label style="display:flex;align-items:center;gap:10px;">
+                                <input type="checkbox" disabled ${hasReport ? 'checked' : ''} />
+                                <span>Active Progress Report</span>
+                            </label>
+                        </p>
+                        
+                        <div style="margin-top:8px">
+                            <h4>Skills</h4>
+                            ${(skills && skills.length) ? (`<ul>${skills.map(sk=>{
+                                const label = (sk.skill_label || sk.skillName || sk.title || sk.name || ('Skill ' + (sk.id||''))).replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                                const cat = sk.category ? (' - ' + String(sk.category).replace(/</g,'&lt;').replace(/>/g,'&gt;')) : '';
+                                return `<li>${label}${cat}</li>`;
+                            }).join('')}</ul>`) : '<div class="muted">No skills available.</div>'}
+                        </div>
+                    `;
                 }
-            } catch (e) { console.warn('Could not fetch students.json', e); }
-
-            const tmpl = document.getElementById('tmpl-student-profile');
-            if (!tmpl) { alert('Profile template missing'); return; }
-            const clone = tmpl.content.firstElementChild.cloneNode(true);
-            const body = clone.querySelector('#studentProfileBody');
-            if (!student) {
-                body.innerHTML = '<p>Student not found.</p>';
-            } else {
-                // Determine assigned therapist display name: prefer stored name then fallback to id lookup if available
-                let assignedName = (student.assigned_therapist_name || '').trim();
-
-                if (!assignedName && student.assigned_therapist) {
-                    // try to fetch users list quickly from the same API if available (best-effort)
-                    try {
-                        const usersRes = await fetch('/api/users.php');
-                        if (usersRes.ok) {
-                            const users = await usersRes.json();
-                            const u = users.find(x => String(x.id) === String(student.assigned_therapist));
-                            if (u) assignedName = `${u.first_name || ''} ${u.last_name || ''}`.trim();
-                        }
-                    } catch (e) { /* ignore */ }
-                }
-
-                if (!assignedName) assignedName = 'Unassigned';
-
-                body.innerHTML = `<h3>${escapeHtml(student.first_name || '')} ${escapeHtml(student.last_name || '')}</h3>` +
-                    `<p>Grade: ${escapeHtml(student.grade || '')}</p>` +
-                    `<p>DOB: ${escapeHtml(student.date_of_birth || '')}</p>` +
-                    `<p>Primary language: ${escapeHtml(student.primary_language || '')}</p>` +
-                    `<p>Assigned Therapist: ${escapeHtml(assignedName)}</p>`;
-            }
-            insertModal(clone);
-        })();
-    } catch (e) { console.error(e); }
-};
-        gradeFilter.addEventListener('change', () => {
-            const g = gradeFilter.value;
-            document.querySelectorAll('.students-grid > div').forEach(card => {
-                if (!g) return card.style.display = '';
-                const text = card.textContent || '';
-                card.style.display = text.includes('Grade ' + g) ? '' : 'none';
-            });
-        });
+                insertModal(clone);
+            })();
+        } catch (e) { console.error(e); }
+    };
+}
+        // (legacy handler removed in favor of combined filters above)
     }
 
     // expose some small helpers for inline handlers used in templates
@@ -330,11 +591,12 @@ window.viewProfile = function(id) {
     // removal uses fetch-backed delete if available
     // preserve any existing implementation (avoid arguments.callee which is invalid in ES modules)
     const _existingRemoveStudent = (typeof window.removeStudent === 'function') ? window.removeStudent : null;
-    window.removeStudent = function(id) {
+    window.removeStudent = async function(id) {
         if (_existingRemoveStudent && _existingRemoveStudent !== window.removeStudent) {
             return _existingRemoveStudent(id);
         }
-        if (!confirm('Remove student #' + id + '?')) return;
+    const ok = await (window.showConfirm ? window.showConfirm('Remove student #' + id + '?') : Promise.resolve(confirm('Remove student #' + id + '?')));
+    if (!ok) return;
         const el = document.querySelector('[data-student-id="' + id + '"]');
         const row = el ? el.closest('.student-row') : null;
         if (row) {

@@ -5,65 +5,40 @@ import { showNotification, closeModal, insertModal } from '../ui.js';
 console.log('Page module: goals loaded');
 
 export function showAddGoalModal(studentId) {
-    const modalHtml = `
-        <div class="modal">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h2>Add New Goal</h2>
-                    <button type="button" class="close">&times;</button>
-                </div>
-                <form id="addGoalForm" class="modal-form">
-                    <input type="hidden" name="student_id" value="${studentId || ''}">
-                    <div class="form-group">
-                        <label for="goalArea">Goal Area *</label>
-                        <select id="goalArea" name="goal_area" required>
-                            <option value="">Select area...</option>
-                            <option value="articulation">Articulation</option>
-                            <option value="language">Language</option>
-                            <option value="fluency">Fluency</option>
-                            <option value="voice">Voice</option>
-                            <option value="pragmatics">Social/Pragmatics</option>
-                            <option value="oral_motor">Oral Motor</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="goalText">Goal Description *</label>
-                        <textarea id="goalText" name="goal_text" rows="3" required placeholder="Describe the specific goal and criteria for success..."></textarea>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="baselineScore">Baseline Score (%)</label>
-                            <input type="number" id="baselineScore" name="baseline_score" min="0" max="100" value="0">
-                        </div>
-                        <div class="form-group">
-                            <label for="targetScore">Target Score (%) *</label>
-                            <input type="number" id="targetScore" name="target_score" min="1" max="100" required>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label for="targetDate">Target Date</label>
-                        <input type="date" id="targetDate" name="target_date">
-                    </div>
-                    <div class="modal-actions">
-                        <button type="button" class="btn btn-outline cancel">Cancel</button>
-                        <button type="submit" class="btn btn-primary">Add Goal</button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    `;
+    // Prefer server-provided template `tmpl-add-goal` to avoid duplicating modal HTML in JS.
+    const tpl = document.getElementById('tmpl-add-goal');
+    if (!tpl) {
+        console.warn('tmpl-add-goal template not found; cannot show goal modal.');
+        return null;
+    }
 
-    // build element and insert via insertModal (expects an element)
+    // Clone the template content and prefill the student select if provided
+    const fragment = tpl.content.cloneNode(true);
+    const select = fragment.querySelector('#goalStudent') || fragment.querySelector('select[name="student_id"]');
+    if (select && studentId) {
+        // select option if present
+        const opt = Array.from(select.options).find(o => String(o.value) === String(studentId));
+        if (opt) opt.selected = true;
+    } else if (studentId) {
+        // no select in template (unexpected) — append hidden input to the form
+        const form = fragment.querySelector('form');
+        if (form) {
+            const hidden = document.createElement('input');
+            hidden.type = 'hidden'; hidden.name = 'student_id'; hidden.value = String(studentId);
+            form.appendChild(hidden);
+        }
+    }
+
+    // Insert the fragment using the shared helper which ensures modal/backdrop behavior
     const wrapper = document.createElement('div');
-    wrapper.innerHTML = modalHtml.trim();
-    const modalEl = wrapper.firstElementChild;
-    if (!modalEl) return null;
+    wrapper.appendChild(fragment);
+    const modalEl = insertModal(wrapper);
 
-    // insertModal will attach close handlers and backdrop; do not attach manual removers here
-    insertModal(modalEl);
-
-    const form = modalEl.querySelector('#addGoalForm');
-    if (form) form.addEventListener('submit', submitGoalForm);
+    // attach the submit handler to the modal-local form
+    if (modalEl) {
+        const form = modalEl.querySelector('#addGoalForm');
+        if (form) form.addEventListener('submit', submitGoalForm);
+    }
     return modalEl;
 }
 
@@ -82,7 +57,17 @@ async function submitGoalForm(e) {
             showNotification('Goal added successfully!', 'success');
             const modal = e.target.closest('.modal');
             if (modal) modal.remove();
-            setTimeout(() => location.reload(), 700);
+            // Try to update dashboard counts via global cache without full reload
+            try {
+                if (window.SLPCache && typeof window.SLPCache.incGoals === 'function') {
+                    window.SLPCache.incGoals(1);
+                } else {
+                    // fallback to reload to ensure other UI updates
+                    setTimeout(() => location.reload(), 700);
+                }
+            } catch (e) {
+                setTimeout(() => location.reload(), 700);
+            }
         } else {
             showNotification((result && result.error) ? result.error : 'Failed to add goal', 'error');
             // allow retry by leaving modal open

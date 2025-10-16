@@ -51,10 +51,7 @@
                     <div class="value"><?php echo htmlspecialchars($student['service_frequency'] ?? 'N/A'); ?></div>
                 </div>
 
-                <div class="field">
-                    <div class="label">Teacher</div>
-                    <div class="value"><?php echo htmlspecialchars($student['teacher'] ?? 'N/A'); ?></div>
-                </div>
+                <!-- Teacher removed from export (field was removed from students schema) -->
 
                 <div class="field">
                     <div class="label">Parent Contact</div>
@@ -72,11 +69,64 @@
         </div>
 
         <!-- Documentation Section -->
-        <?php if (!empty($student_docs)): ?>
+        <?php if (!empty($student_docs) || !empty($student_goals)): ?>
         <div class="forms-section">
             <h2 class="section-title">📋 Documentation & Forms</h2>
             <div class="forms-grid">
-                <?php foreach ($student_docs as $doc): ?>
+                <?php
+                    // Build a combined forms array that includes per-form documents and goals
+                    $forms = [];
+                    if (!empty($student_docs) && is_array($student_docs)) {
+                        foreach ($student_docs as $d) {
+                            // Normalize keys we expect
+                            $forms[] = [
+                                'title' => $d['title'] ?? ($d['form_type'] ?? 'Document'),
+                                'form_type' => $d['form_type'] ?? null,
+                                'form_data' => $d['form_data'] ?? null,
+                                'created_at' => $d['created_at'] ?? null,
+                                'file_path' => $d['file_path'] ?? null
+                            ];
+                        }
+                    }
+
+                    // Include goals as a grouped set of entries so they appear in the canonical order
+                    if (!empty($student_goals) && is_array($student_goals)) {
+                        foreach ($student_goals as $g) {
+                            $gTitle = $g['goal_area'] ?? ($g['title'] ?? ($g['goal_text'] ?? 'Goal'));
+                            $forms[] = [
+                                'title' => $gTitle,
+                                'form_type' => 'goals',
+                                'form_data' => $g,
+                                'created_at' => $g['created_at'] ?? null
+                            ];
+                        }
+                    }
+
+                    // Ensure consistent ordering using canonical group order: initial, goals, sessions, other, discharge.
+                    $order = ['initial_evaluation','goals','session_report','other_documents','discharge_report'];
+                    $buckets = array_fill_keys($order, []);
+                    foreach ($forms as $f) {
+                        $ft = strtolower(trim((string)($f['form_type'] ?? '')));
+                        if (in_array($ft, ['initial_evaluation','initial_profile'])) $key = 'initial_evaluation';
+                        elseif ($ft === 'goals' || strpos($ft, 'goal') !== false) $key = 'goals';
+                        elseif (strpos($ft, 'session') !== false || $ft === 'session_report') $key = 'session_report';
+                        elseif (strpos($ft, 'discharge') !== false || $ft === 'discharge_report') $key = 'discharge_report';
+                        else $key = 'other_documents';
+                        $buckets[$key][] = $f;
+                    }
+                    $merged = [];
+                    foreach ($order as $k) {
+                        usort($buckets[$k], function($a, $b) {
+                            $ta = isset($a['created_at']) ? strtotime($a['created_at']) : 0;
+                            $tb = isset($b['created_at']) ? strtotime($b['created_at']) : 0;
+                            return $tb <=> $ta;
+                        });
+                        $merged = array_merge($merged, $buckets[$k]);
+                    }
+                    $forms = $merged;
+                ?>
+
+                <?php foreach ($forms as $doc): ?>
                 <div class="form-item">
                     <div class="form-info">
                         <div class="form-title">
@@ -130,48 +180,7 @@
         </div>
         <?php endif; ?>
 
-        <!-- Progress Reports Section -->
-        <?php if (!empty($student_progress)): ?>
-        <div class="progress-section">
-            <h2 class="section-title">📈 Progress Reports</h2>
-            <?php 
-            // Sort progress by date (newest first)
-            usort($student_progress, function($a, $b) {
-                return strtotime($b['date_recorded'] ?? $b['created_at'] ?? 'now') - strtotime($a['date_recorded'] ?? $a['created_at'] ?? 'now');
-            });
-            foreach (array_slice($student_progress, 0, 10) as $progress): 
-            ?>
-            <div class="progress-item">
-                <h4>
-                    <?php echo date('M j, Y', strtotime($progress['date_recorded'] ?? $progress['created_at'] ?? 'now')); ?>
-                    <?php if (!empty($progress['score'])): ?>
-                    <span style="float: right; color: var(--info-color); font-weight: bold; font-size: 1rem;"><?php echo $progress['score']; ?>%</span>
-                    <?php endif; ?>
-                </h4>
-                <?php if (!empty($progress['goal_area'])): ?>
-                <p style="margin: 0.25rem 0; font-weight: 500; color: var(--accent-color);">
-                    Goal Area: <?php echo htmlspecialchars($progress['goal_area']); ?>
-                </p>
-                <?php endif; ?>
-                <?php if (!empty($progress['notes'])): ?>
-                <p><?php echo htmlspecialchars($progress['notes']); ?></p>
-                <?php endif; ?>
-            </div>
-            <?php endforeach; ?>
-            <?php if (count($student_progress) > 10): ?>
-            <div style="text-align: center; padding: 1rem; color: var(--muted); font-style: italic; background: var(--light-bg); border-radius: var(--border-radius); margin-top: 1rem;">
-                ... and <?php echo count($student_progress) - 10; ?> more progress reports
-            </div>
-            <?php endif; ?>
-        </div>
-        <?php else: ?>
-        <div class="progress-section">
-            <h2 class="section-title">📈 Progress Reports</h2>
-            <div style="text-align: center; padding: 2rem; color: var(--muted); font-style: italic; background: var(--light-bg); border-radius: var(--border-radius); border: 1px solid var(--border-color);">
-                No progress reports recorded for this student yet.
-            </div>
-        </div>
-        <?php endif; ?>
+        <!-- Progress Reports Section removed (feature deprecated) -->
 
         <div class="export-footer">
             Generated on <?php echo date('F j, Y \a\t g:i A'); ?> • SLP Database Export

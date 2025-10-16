@@ -18,11 +18,20 @@ try {
     if ($isAdmin) {
         $stmt = $pdo->query('SELECT * FROM students ORDER BY last_name, first_name');
         $user_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    } else {
-        $stmt = $pdo->prepare('SELECT * FROM students WHERE assigned_therapist = :uid OR assigned_therapist IS NULL ORDER BY last_name, first_name');
-        $stmt->execute([':uid' => $currentUserId]);
-        $user_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    }
+	} else {
+		// If assigned_therapist column isn't present in this schema, fall back to returning all non-archived students
+		$pi2 = $pdo->prepare("PRAGMA table_info('students')");
+		$pi2->execute();
+		$studentCols = array_column($pi2->fetchAll(PDO::FETCH_ASSOC), 'name');
+		if (in_array('assigned_therapist', $studentCols)) {
+			$stmt = $pdo->prepare('SELECT * FROM students WHERE assigned_therapist = :uid OR assigned_therapist IS NULL ORDER BY last_name, first_name');
+			$stmt->execute([':uid' => $currentUserId]);
+			$user_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+		} else {
+			$stmt = $pdo->query('SELECT * FROM students WHERE archived = 0 ORDER BY last_name, first_name');
+			$user_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+		}
+	}
 } catch (Exception $e) {
     // fallback to empty array so template still renders
     $user_students = [];
@@ -32,21 +41,21 @@ try {
 $action = $_GET['action'] ?? '';
 $profileStudentId = isset($_GET['id']) ? (int)$_GET['id'] : null;
 
-if ($action === 'profile' && $profileStudentId) {
-	// Find the student in the authoritative list
-	$profileStudent = null;
-	foreach ($user_students as $student) {
-		if ((int)($student['id'] ?? 0) === $profileStudentId) {
-			$profileStudent = $student;
-			break;
-		}
+if (($action === 'profile' || $action === 'edit') && $profileStudentId) {
+	// Fetch the requested student directly from the DB so profiles render regardless of filters
+	try {
+		$pdo = get_db();
+		$stmt = $pdo->prepare('SELECT * FROM students WHERE id = :id LIMIT 1');
+		$stmt->execute([':id' => $profileStudentId]);
+		$profileStudent = $stmt->fetch(PDO::FETCH_ASSOC);
+	} catch (Exception $e) {
+		$profileStudent = null;
 	}
 
 	if ($profileStudent) {
 		// Load student's forms from the documents table (DB-backed)
 		$studentForms = [];
 		try {
-			$pdo = get_db();
 			$stmt = $pdo->prepare('SELECT id, title, filename, metadata, content, created_at FROM documents WHERE student_id = :sid ORDER BY created_at DESC');
 			$stmt->execute([':sid' => $profileStudentId]);
 			$rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -59,11 +68,10 @@ if ($action === 'profile' && $profileStudentId) {
 				$studentForms[] = ['id' => $r['id'], 'title' => $r['title'], 'created_at' => $r['created_at']];
 			}
 		} catch (Exception $e) {
-			// fallback to empty forms
 			$studentForms = [];
 		}
 
-		// Display profile view
+		// Display profile view. Editing is handled client-side via the edit modal template.
 		include 'student_profile.php';
 		return;
 	}
@@ -86,7 +94,7 @@ ksort($students_by_grade, SORT_NATURAL);
 <div class="container">
 	<div class="page-header stack">
 		<h1>My Students</h1>
-		<button class="btn btn-primary primary-action-left" data-open-modal="tmpl-add-student">Add New Student</button>
+		<button class="btn btn-primary primary-action-left" type="button" onclick="try{ if(typeof showAddStudentModal === 'function'){ showAddStudentModal(); } else { const tpl = document.getElementById('tmpl-add-student'); if(tpl){ const clone = tpl.content.cloneNode(true); const container = document.createElement('div'); container.appendChild(clone); insertModal(container); } } }catch(e){ console.error(e); }">Add New Student</button>
 	</div>
     
 	<div class="students-controls">
@@ -112,6 +120,63 @@ ksort($students_by_grade, SORT_NATURAL);
 			</select>
 		</div>
 	</div>
+		<script>
+		// Fallback: define editStudentProfile if the main JS didn't expose it. This ensures
+		// clicking Edit opens the edit modal and submits update_student via AJAX.
+		(function(){
+			if (typeof window.editStudentProfile === 'function') return;
+			window.editStudentProfile = function(studentId){
+				try {
+					var fd = new URLSearchParams(); fd.append('action','get_student'); fd.append('id', String(studentId));
+					fetch('/includes/submit.php', { method: 'POST', headers: {'Content-Type':'application/x-www-form-urlencoded'}, body: fd.toString() })
+					.then(function(r){ return r.json(); })
+					.then(function(res){
+						if (!res || !res.success) { alert('Failed to load student'); return; }
+						var student = res.student || {};
+						var tpl = document.getElementById('tmpl-edit-student');
+						if (!tpl) { alert('Edit template missing'); return; }
+						var clone = tpl.content.firstElementChild.cloneNode(true);
+						var modalEl = insertModal(clone);
+						if (!modalEl) return;
+						var qs = function(sel){ return modalEl.querySelector(sel); };
+						if (qs('#editStudentId')) qs('#editStudentId').value = student.id || '';
+						if (qs('#editFirstName')) qs('#editFirstName').value = student.first_name || '';
+						if (qs('#editLastName')) qs('#editLastName').value = student.last_name || '';
+						if (qs('#editGrade')) qs('#editGrade').value = student.grade || '';
+						if (qs('#editDateOfBirth')) qs('#editDateOfBirth').value = student.date_of_birth || '';
+						if (qs('#editGender')) qs('#editGender').value = student.gender || '';
+						if (qs('#editPrimaryLanguage')) qs('#editPrimaryLanguage').value = student.primary_language || '';
+						if (qs('#editServiceFrequency')) qs('#editServiceFrequency').value = student.service_frequency || '';
+						if (qs('#editParentContact')) qs('#editParentContact').value = student.parent_contact || '';
+						if (qs('#editMedicalInfo')) qs('#editMedicalInfo').value = student.medical_info || '';
+						if (qs('#displayStudentId')) qs('#displayStudentId').textContent = student.student_id || student.id || '';
+
+						var form = qs('#editStudentForm');
+						if (form) {
+							form.addEventListener('submit', function(e){
+								e.preventDefault();
+								var fdata = new FormData(form);
+								fdata.append('action','update_student');
+								fetch('/includes/submit.php', { method: 'POST', body: fdata })
+								.then(function(r){ return r.text(); })
+								.then(function(txt){
+									var out = null;
+									try { out = txt ? JSON.parse(txt) : null; } catch (e){ console.error('update parse', e, txt); alert('Server error'); return; }
+									if (out && out.success) {
+										// close modal and refresh
+										if (typeof closeModal === 'function') closeModal();
+										setTimeout(function(){ location.reload(); }, 200);
+									} else {
+										alert((out && out.error) ? out.error : 'Failed to update');
+									}
+								}).catch(function(err){ console.error(err); alert('Network error'); });
+							}, { once: true });
+						}
+					}).catch(function(err){ console.error(err); alert('Failed to load student'); });
+				} catch (e) { console.error(e); }
+			};
+		})();
+		</script>
     
 	<div class="students-by-grade">
 		<?php if (empty($user_students)): ?>
@@ -136,12 +201,9 @@ ksort($students_by_grade, SORT_NATURAL);
 						<?php foreach ($grade_students as $student): ?>
 							<?php
 								$student_goals = 0;
-								$student_reports = 0;
+								$student_reports = 0; // progress reporting removed
 								foreach ($goals as $goal) {
 									if ($goal['student_id'] == $student['id']) $student_goals++;
-								}
-								foreach ($progress_updates as $update) {
-									if ($update['student_id'] == $student['id']) $student_reports++;
 								}
 							?>
 							<div class="student-row" data-student-id="<?php echo $student['id']; ?>">
@@ -166,10 +228,6 @@ ksort($students_by_grade, SORT_NATURAL);
 									<div class="student-details-content">
 										<div class="student-stats">
 											<div class="stat-item">
-												<span class="stat-label">Date of Birth:</span>
-												<span class="stat-value"><?php echo htmlspecialchars($student['date_of_birth'] ?? 'Not specified'); ?></span>
-											</div>
-											<div class="stat-item">
 												<span class="stat-label">Primary Language:</span>
 												<span class="stat-value"><?php echo htmlspecialchars($student['primary_language'] ?? 'Not specified'); ?></span>
 											</div>
@@ -177,17 +235,13 @@ ksort($students_by_grade, SORT_NATURAL);
 												<span class="stat-label">Service Frequency:</span>
 												<span class="stat-value"><?php echo htmlspecialchars($student['service_frequency'] ?? 'Not specified'); ?></span>
 											</div>
-											<div class="stat-item">
-												<span class="stat-label">Assigned Therapist:</span>
-												<span class="stat-value"><?php echo htmlspecialchars($user_data['first_name'] . ' ' . $user_data['last_name']); ?></span>
-											</div>
 										</div>
 										
 										<div class="student-actions">
-											<button class="btn btn-outline" onclick="viewProfile(<?php echo $student['id']; ?>)">Profile</button>
-											<button class="btn btn-secondary" onclick="navigateToView('progress', '?student_id=<?php echo $student['id']; ?>')">Progress</button>
-											<button class="btn btn-secondary" onclick="openStudentDocs(<?php echo $student['id']; ?>)">Documentation</button>
-											<button class="btn btn-outline" onclick="exportStudent(<?php echo $student['id']; ?>)">Export</button>
+											<a class="btn btn-outline" href="?view=students&action=profile&id=<?php echo $student['id']; ?>">Profile</a>
+											<a class="btn btn-secondary" href="?view=documentation&student_id=<?php echo $student['id']; ?>">Documentation</a>
+											<button class="btn btn-secondary" data-open-progress="" data-student-id="<?php echo $student['id']; ?>">Progress</button>
+											<button class="btn btn-outline" onclick="exportStudent(<?php echo $student['id']; ?>)">Cumulative record</button>
 											<button class="btn btn-danger" onclick="archiveStudent(<?php echo $student['id']; ?>)">Archive</button>
 										</div>
 									</div>

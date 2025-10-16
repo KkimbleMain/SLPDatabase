@@ -13,7 +13,6 @@ function loadJsonData(string $name): array {
         'students' => 'students',
         'documents' => 'documents',
         'goals' => 'goals',
-        'progress_updates' => 'progress_updates',
         'reports' => 'reports'
     ];
 
@@ -56,35 +55,6 @@ function loadJsonData(string $name): array {
     return [];
 }
 
-/**
- * Save array data to JSON file
- */
-function saveJsonData(string $name, array $data): bool {
-    // Deprecated: runtime JSON file writes are disabled. The application uses SQLite for all writes.
-    // Dev migration scripts may still read or write JSON files directly.
-    return false;
-}
-
-/**
- * Insert a record into a JSON collection and return the new numeric id.
- */
-function insertRecord(string $name, array $record): int {
-    // InsertRecord is preserved for compatibility but will not write to disk. Use DB for persistence.
-    // If callers expect a numeric id, return a negative sentinel to indicate unsupported at runtime.
-    return -1;
-}
-
-/**
- * Basic input sanitizer used by dev scripts.
- */
-function sanitizeInput($val) {
-	if (is_string($val)) return trim(strip_tags($val));
-	return $val;
-}
-
-/**
- * Find a single record by field in either an array or named JSON collection
- */
 function findRecord($collection, string $field, $value) {
 	$rows = is_array($collection) ? $collection : loadJsonData((string)$collection);
 	foreach ($rows as $r) {
@@ -123,11 +93,18 @@ function generateCSRFToken(): string {
 	return $_SESSION['csrf_token'];
 }
 
-function validateCSRFToken($token): bool {
-	return !empty($token) && isset($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], (string)$token);
-}
 
 // Provide a noop placeholder for any missing SQL toggle
 if (!defined('USE_SQL')) define('USE_SQL', false);
+
+// Toggle server-side PDF generation. Set to true to enable server-side PDF rendering (wkhtmltopdf).
+if (!defined('PDF_ENABLED')) define('PDF_ENABLED', false);
+
+// Controls the source of items shown in the Dashboard "Recent Activity" feed.
+// Options:
+//  - 'synth+log' (default): synthesize from DB tables and merge with activity_log
+//  - 'synthOnly': only synthesize from DB tables (ignore activity_log)
+//  - 'logOnly': only read from activity_log
+if (!defined('RECENT_ACTIVITY_MODE')) define('RECENT_ACTIVITY_MODE', 'synth+log');
 
 ?>

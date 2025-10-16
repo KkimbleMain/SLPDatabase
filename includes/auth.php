@@ -63,9 +63,31 @@ function canAccessStudent($student_id) {
     if (!isLoggedIn()) {
         return false;
     }
-    
+    // Prefer checking the SQLite DB when available and the students table includes assigned_therapist
+    try {
+        if (file_exists(__DIR__ . '/sqlite.php')) {
+            require_once __DIR__ . '/sqlite.php';
+            if (function_exists('get_db')) {
+                $pdo = get_db();
+                $pi = $pdo->prepare("PRAGMA table_info('students')");
+                $pi->execute();
+                $cols = array_column($pi->fetchAll(PDO::FETCH_ASSOC), 'name');
+                if (in_array('assigned_therapist', $cols)) {
+                    $stmt = $pdo->prepare('SELECT assigned_therapist FROM students WHERE id = :id LIMIT 1');
+                    $stmt->execute([':id' => $student_id]);
+                    $r = $stmt->fetch(PDO::FETCH_ASSOC);
+                    if ($r) return isset($r['assigned_therapist']) && (int)$r['assigned_therapist'] === (int)($_SESSION['user_id'] ?? 0);
+                    return false;
+                }
+            }
+        }
+    } catch (\Throwable $e) {
+        // fall through to legacy JSON-backed check
+    }
+
+    // Legacy fallback: JSON-backed findRecord may return student arrays with assigned_therapist key
     $student = findRecord('students', 'id', $student_id);
-    return $student && $student['assigned_therapist'] == $_SESSION['user_id'];
+    return $student && isset($student['assigned_therapist']) && ((string)$student['assigned_therapist'] === (string)($_SESSION['user_id'] ?? ''));
 }
 
 /**
@@ -81,8 +103,15 @@ function logout() {
  * Require login
  */
 function requireLogin() {
-    if (!isLoggedIn()) {
-    header('Location: /login.php');
+    // Ensure session started so isLoggedIn() can inspect session values
+    if (session_status() === PHP_SESSION_NONE) session_start();
+
+    // Avoid redirect loop: if current script is login.php, don't redirect
+    $script = basename($_SERVER['SCRIPT_NAME'] ?? '');
+    $onLoginPage = in_array($script, ['login.php'], true);
+
+    if (!isLoggedIn() && !$onLoginPage) {
+        header('Location: /login.php');
         exit();
     }
 }

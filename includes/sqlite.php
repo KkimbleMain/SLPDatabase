@@ -1,8 +1,7 @@
 <?php
 /**
  * Lightweight SQLite helper for local testing.
- * Provides minimal functions: sqlite_init(), sqlite_insert_student(), sqlite_find_record_by_field(),
- * sqlite_find_records(), sqlite_update_record(), sqlite_delete_record().
+ * Provides minimal functions: sqlite_init(), get_db(), sqlite_get_pdo(), sqlite_get_path().
  */
 
 function sqlite_get_path() {
@@ -26,6 +25,12 @@ function sqlite_init() {
     try {
         $pdo = new PDO('sqlite:' . $path);
         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        // reduce contention waits: set a reasonable busy timeout (milliseconds)
+        try {
+            $pdo->exec('PRAGMA busy_timeout = 3000'); // 3 seconds
+        } catch (\Throwable $e) {
+            // non-fatal if PRAGMA not supported
+        }
     } catch (PDOException $e) {
         throw new Exception('Failed to open SQLite database: ' . $e->getMessage());
     }
@@ -77,20 +82,39 @@ function sqlite_init() {
         updated_at TEXT
     );");
 
-    $pdo->exec("CREATE TABLE IF NOT EXISTS progress_updates (
+    // Progress tracking tables
+    $pdo->exec("CREATE TABLE IF NOT EXISTS progress_skills (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        student_id INTEGER,
-        goal_id INTEGER,
-        date_recorded TEXT,
-        score INTEGER,
-        notes TEXT,
-        created_at TEXT
+        student_id INTEGER NOT NULL,
+        skill_label TEXT NOT NULL,
+        category TEXT,
+        subcategory TEXT,
+        created_by INTEGER,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
     );");
 
-    // Create users table for authentication
+    $pdo->exec("CREATE TABLE IF NOT EXISTS progress_updates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        skill_id INTEGER NOT NULL,
+        student_id INTEGER NOT NULL,
+        score INTEGER NOT NULL,
+        target_score INTEGER,
+        notes TEXT,
+        recorded_by INTEGER,
+        date_recorded TEXT,
+        created_at TEXT,
+        FOREIGN KEY (skill_id) REFERENCES progress_skills(id) ON DELETE CASCADE,
+        FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
+    );");
+
+    // Create users table for authentication (prefer password_hash + email when possible)
     $pdo->exec("CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE,
+        password_hash TEXT,
+        email TEXT,
         password TEXT,
         first_name TEXT,
         last_name TEXT,
@@ -119,6 +143,16 @@ function sqlite_init() {
         content TEXT,
         created_at TEXT,
         FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
+    );");
+
+    // Per-student progress report metadata (single overwriteable report per student)
+    $pdo->exec("CREATE TABLE IF NOT EXISTS student_reports (
+        student_id INTEGER PRIMARY KEY,
+        path TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        created_by INTEGER,
+        status TEXT
     );");
 
     // Create per-form normalized tables
@@ -158,6 +192,15 @@ function sqlite_init() {
         FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
     );");
 
+    // Ensure progress_reports exists with an autoincrement id PK for tracking report IDs
+    $pdo->exec("CREATE TABLE IF NOT EXISTS progress_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER,
+        title TEXT,
+        created_at TEXT,
+        FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
+    );");
+
     // Activity log table for recent activity feed
     $pdo->exec("CREATE TABLE IF NOT EXISTS activity_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -193,6 +236,19 @@ function get_db() {
     }
     // ensure foreign keys
     $pdo->exec('PRAGMA foreign_keys = ON');
+
+    // Best-effort schema migrations for users table to ensure email/password_hash exist
+    try {
+        $pi = $pdo->prepare("PRAGMA table_info('users')");
+        $pi->execute();
+        $cols = array_column($pi->fetchAll(PDO::FETCH_ASSOC), 'name');
+        if (!in_array('email', $cols)) {
+            try { $pdo->exec("ALTER TABLE users ADD COLUMN email TEXT"); } catch (Throwable $_e) { /* ignore */ }
+        }
+        if (!in_array('password_hash', $cols)) {
+            try { $pdo->exec("ALTER TABLE users ADD COLUMN password_hash TEXT"); } catch (Throwable $_e) { /* ignore */ }
+        }
+    } catch (Throwable $e) { /* ignore */ }
     return $pdo;
 }
 
@@ -213,91 +269,5 @@ function sqlite_get_pdo() {
     return $pdo;
 }
 
-function sqlite_insert_student($student_data) {
-    $pdo = sqlite_get_pdo();
-    $stmt = $pdo->prepare("INSERT INTO students (first_name, last_name, student_id, age, grade, assigned_therapist, date_of_birth, gender, primary_language, teacher, parent_contact, medical_info, iep_status, service_frequency, created_at, updated_at) VALUES (:first_name, :last_name, :student_id, :age, :grade, :assigned_therapist, :date_of_birth, :gender, :primary_language, :teacher, :parent_contact, :medical_info, :iep_status, :service_frequency, :created_at, :updated_at)");
-    $stmt->execute([
-        ':first_name' => $student_data['first_name'] ?? null,
-        ':last_name' => $student_data['last_name'] ?? null,
-        ':student_id' => $student_data['student_id'] ?? null,
-        ':age' => isset($student_data['age']) ? intval($student_data['age']) : null,
-        ':grade' => $student_data['grade'] ?? null,
-        ':assigned_therapist' => $student_data['assigned_therapist'] ?? null,
-        ':date_of_birth' => $student_data['date_of_birth'] ?? null,
-        ':gender' => $student_data['gender'] ?? null,
-        ':primary_language' => $student_data['primary_language'] ?? null,
-        ':teacher' => $student_data['teacher'] ?? null,
-        ':parent_contact' => $student_data['parent_contact'] ?? null,
-        ':medical_info' => $student_data['medical_info'] ?? null,
-        ':iep_status' => $student_data['iep_status'] ?? null,
-        ':service_frequency' => $student_data['service_frequency'] ?? null,
-        ':created_at' => $student_data['created_at'] ?? date('Y-m-d H:i:s'),
-        ':updated_at' => $student_data['updated_at'] ?? date('Y-m-d H:i:s')
-    ]);
-    return (int)$pdo->lastInsertId();
-}
-
-function sqlite_find_record_by_field($table, $field, $value) {
-    $pdo = sqlite_get_pdo();
-    $stmt = $pdo->prepare("SELECT * FROM " . $table . " WHERE " . $field . " = :val LIMIT 1");
-    $stmt->execute([':val' => $value]);
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    return $row ?: null;
-}
-
-function sqlite_find_records($table, $conditions = []) {
-    $pdo = sqlite_get_pdo();
-    if (empty($conditions)) {
-        $stmt = $pdo->query("SELECT * FROM " . $table);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
-    }
-    $where = [];
-    $params = [];
-    foreach ($conditions as $k => $v) {
-        $where[] = "$k = :$k";
-        $params[":$k"] = $v;
-    }
-    $sql = "SELECT * FROM " . $table . " WHERE " . implode(' AND ', $where);
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute($params);
-    return $stmt->fetchAll(PDO::FETCH_ASSOC);
-}
-
-function sqlite_update_record($table, $id, $updates) {
-    $pdo = sqlite_get_pdo();
-    $sets = [];
-    $params = [':id' => $id];
-    foreach ($updates as $k => $v) {
-        $sets[] = "$k = :$k";
-        $params[":$k"] = $v;
-    }
-    $sql = "UPDATE " . $table . " SET " . implode(', ', $sets) . " WHERE id = :id";
-    $stmt = $pdo->prepare($sql);
-    return $stmt->execute($params);
-}
-
-function sqlite_delete_record($table, $id) {
-    $pdo = sqlite_get_pdo();
-    $stmt = $pdo->prepare("DELETE FROM " . $table . " WHERE id = :id");
-    return $stmt->execute([':id' => $id]);
-}
-
-// User helpers
-function sqlite_insert_user($user) {
-    $pdo = sqlite_get_pdo();
-    $stmt = $pdo->prepare("INSERT INTO users (username, password, first_name, last_name, role, created_at) VALUES (:username, :password, :first_name, :last_name, :role, :created_at)");
-    $stmt->execute([
-        ':username' => $user['username'],
-        ':password' => $user['password'],
-        ':first_name' => $user['first_name'] ?? null,
-        ':last_name' => $user['last_name'] ?? null,
-        ':role' => $user['role'] ?? 'therapist',
-        ':created_at' => $user['created_at'] ?? date('Y-m-d H:i:s')
-    ]);
-    return (int)$pdo->lastInsertId();
-}
-
-function sqlite_find_user_by_username($username) {
-    return sqlite_find_record_by_field('users', 'username', $username);
-}
+// Removed unused helper sqlite_find_user_by_username() to reduce dead code.
 

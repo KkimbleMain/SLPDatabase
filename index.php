@@ -1,7 +1,9 @@
 <?php
 // Load core helpers first so functions like loadJsonData() are available
 require_once __DIR__ . '/includes/config.php';
-require_once __DIR__ . '/includes/require_login.php';
+require_once __DIR__ . '/includes/auth.php';
+// Ensure user is authenticated for this page
+requireLogin();
 // Defensive: if helpers still missing, stop with a clear message
 if (!function_exists('loadJsonData')) {
     http_response_code(500);
@@ -36,27 +38,84 @@ $view = $_GET['view'] ?? 'dashboard';
 
 // Load user data safely (helpers accept table name or arrays)
 require_once __DIR__ . '/includes/sqlite.php';
-try {
-    $pdo = get_db();
-    $users = $pdo->query('SELECT id, username, first_name, last_name FROM users')->fetchAll(PDO::FETCH_ASSOC);
-    $progress_updates = $pdo->query('SELECT p.*, s.first_name AS student_first, s.last_name AS student_last FROM progress_updates p LEFT JOIN students s ON s.id = p.student_id ORDER BY p.created_at DESC')->fetchAll(PDO::FETCH_ASSOC);
-} catch (Throwable $e) {
-    $users = [];
-    $progress_updates = [];
-}
+    try {
+        $pdo = get_db();
+        $users = $pdo->query('SELECT id, username, first_name, last_name FROM users')->fetchAll(PDO::FETCH_ASSOC);
+        // progress reporting removed: do not query progress_updates table
+        $progress_updates = [];
+    } catch (Throwable $e) {
+        $users = [];
+        $progress_updates = [];
+    }
 
 $user_data = findRecord('users', 'id', $user_id);
 if (!is_array($user_data)) $user_data = [];
 
-// Load students assigned to this user (ensure array returned)
-$user_students = findRecords('students', ['assigned_therapist' => $user_id]);
-if (!is_array($user_students)) $user_students = [];
+// Determine if current user is admin for template/DB queries
+$isAdmin = isset($user_data['role']) && $user_data['role'] === 'admin';
 
-// Get statistics with safe defaults
-$total_students = count($user_students);
-$goals = findRecords('goals', ['therapist_id' => $user_id]);
-if (!is_array($goals)) $goals = [];
-$total_goals = count($goals);
+// Load students assigned to this user from the DB (preferred). If assigned_therapist column is not present
+// or query fails, fall back to returning all active students.
+$user_students = [];
+$total_students = 0;
+$total_goals = 0;
+try {
+    $pdo = get_db();
+    // Check if assigned_therapist column exists
+    $pi = $pdo->prepare("PRAGMA table_info('students')");
+    $pi->execute();
+    $cols = array_column($pi->fetchAll(PDO::FETCH_ASSOC), 'name');
+    if (in_array('assigned_therapist', $cols)) {
+        $stmt = $pdo->prepare('SELECT * FROM students WHERE assigned_therapist = :uid AND archived = 0 ORDER BY last_name, first_name');
+        $stmt->execute([':uid' => $user_id]);
+        $user_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } else {
+        // fallback: return all non-archived students
+        $stmt = $pdo->query('SELECT * FROM students WHERE archived = 0 ORDER BY last_name, first_name');
+        $user_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    $total_students = is_array($user_students) ? count($user_students) : 0;
+
+    // Count goals for this therapist (if goals table exists)
+    $pi = $pdo->prepare("PRAGMA table_info('goals')");
+    $pi->execute();
+    $gcols = array_column($pi->fetchAll(PDO::FETCH_ASSOC), 'name');
+    if (!empty($gcols) && in_array('therapist_id', $gcols)) {
+        $stmt = $pdo->prepare('SELECT COUNT(*) FROM goals WHERE therapist_id = :uid');
+        $stmt->execute([':uid' => $user_id]);
+        $total_goals = (int)$stmt->fetchColumn();
+    } else {
+        $total_goals = 0;
+    }
+    // Load goals list for templates (used by students.php)
+    try {
+        if ($isAdmin) {
+            $stmt = $pdo->query('SELECT * FROM goals ORDER BY created_at DESC');
+            $goals = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } else {
+            $studentIds = array_column($user_students, 'id');
+            if (!empty($studentIds)) {
+                $placeholders = implode(',', array_fill(0, count($studentIds), '?'));
+                $stmt = $pdo->prepare("SELECT * FROM goals WHERE student_id IN ({$placeholders}) ORDER BY created_at DESC");
+                $stmt->execute($studentIds);
+                $goals = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            } else {
+                $goals = [];
+            }
+        }
+    } catch (Throwable $e) {
+        $goals = [];
+    }
+} catch (Throwable $e) {
+    // fallback to legacy helpers
+    $user_students = findRecords('students', ['assigned_therapist' => $user_id]);
+    if (!is_array($user_students)) $user_students = [];
+    $total_students = count($user_students);
+    $goals = findRecords('goals', ['therapist_id' => $user_id]);
+    if (!is_array($goals)) $goals = [];
+    $total_goals = count($goals);
+}
 
 // Load comprehensive recent activity
 require_once 'includes/activity_tracker.php';
@@ -100,6 +159,7 @@ $student_progress = $student_progress ?? [];
                 <a href="?view=dashboard" class="<?php echo $view == 'dashboard' ? 'active' : ''; ?>">Dashboard</a>
                 <a href="?view=students" class="<?php echo $view == 'students' ? 'active' : ''; ?>">Students</a>
                 <a href="?view=documentation" class="<?php echo $view == 'documentation' ? 'active' : ''; ?>">Documentation</a>
+                <a href="?view=progress" class="<?php echo $view == 'progress' ? 'active' : ''; ?>">Progress</a>
                 <a href="?view=settings" class="<?php echo $view == 'settings' ? 'active' : ''; ?>">Settings</a>
             </nav>
             <div class="user-menu">
@@ -117,8 +177,9 @@ $student_progress = $student_progress ?? [];
         $allowed = [
             'dashboard' => __DIR__ . '/templates/dashboard.php',
             'students' => __DIR__ . '/templates/students.php',
-            'documentation' => __DIR__ . '/templates/documentation.php',
-            'settings' => __DIR__ . '/templates/settings.php',
+        'documentation' => __DIR__ . '/templates/documentation.php',
+        'progress' => __DIR__ . '/templates/progress.php',
+        'settings' => __DIR__ . '/templates/settings.php',
         ];
 
         $sel = $view;

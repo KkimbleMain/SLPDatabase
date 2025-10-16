@@ -4,9 +4,9 @@ import { showNotification, closeModal, insertModal } from './ui.js';
 // The modal modules live at assets/js/*.js (no nested 'modals' folder)
 import { showAddStudentModal } from './pages/students.js';
 import { showAddGoalModal } from './pages/goals.js';
-import { showAddProgressModal, showQuickProgressModal as progressQuick } from './pages/progress.js';
-// quickProgress helper: prefer the progress module export, fallback to showAddProgressModal
-let showQuickProgressModal = progressQuick || showAddProgressModal;
+import progressModule from './pages/progress.js';
+
+// quickProgress helper removed — use showAddProgressModal directly from the progress module
 
 document.addEventListener('DOMContentLoaded', () => {
     function attachModalHandlers(root = document) {
@@ -41,9 +41,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 attachModalHandlers(container);
                 // Attach default submit handlers for known template forms so they use AJAX
-                // NOTE: addStudentForm is intentionally excluded here because the students page
-                // module (`assets/js/pages/students.js`) provides its own submit handling.
-                container.querySelectorAll('form#addGoalForm, form#addProgressForm').forEach(form => {
+                // Include addStudentForm and addGoalForm here so templates opened via data-open-modal are wired.
+                container.querySelectorAll('form#addGoalForm, form#addStudentForm').forEach(form => {
                     if (form.dataset.slpInitialized) return;
                     form.dataset.slpInitialized = '1';
                     form.addEventListener('submit', async (e) => {
@@ -53,8 +52,6 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (form.id === 'addGoalForm') {
                             if (!fd.get('description') && fd.get('goal_text')) fd.set('description', fd.get('goal_text'));
                             fd.append('action', 'add_goal');
-                        } else if (form.id === 'addProgressForm') {
-                            fd.append('action', 'add_progress');
                         } else if (form.id === 'addStudentForm') {
                             fd.append('action', 'add_student');
                         }
@@ -88,6 +85,12 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('[data-open-modal]').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const id = btn.getAttribute('data-open-modal');
+            // Prefer page module helper for the add-student modal so it namespaces ids and attaches handlers correctly
+            if (id === 'tmpl-add-student' && typeof showAddStudentModal === 'function') {
+                const preId = btn.getAttribute('data-student-id');
+                try { showAddStudentModal(preId); } catch (err) { console.warn('showAddStudentModal failed, falling back', err); }
+                return;
+            }
             const tpl = document.getElementById(id);
             if (!tpl) return;
             const clone = tpl.content.cloneNode(true);
@@ -102,6 +105,24 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (sel) sel.value = preId;
             }
             attachModalHandlers(container);
+        });
+    });
+
+    // handle progress quick buttons (open progress view or add-skill modal)
+    document.querySelectorAll('[data-open-progress]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const sid = btn.getAttribute('data-student-id');
+            if (!sid) return;
+            const urlParams = new URLSearchParams(window.location.search);
+            const view = urlParams.get('view') || 'dashboard';
+            if (view === 'progress' && typeof window.initializeProgress === 'function') {
+                // We're already on the progress page for some student — dispatch event to open add-skill modal
+                const ev = new CustomEvent('openAddSkill', { detail: { student_id: Number(sid) } });
+                document.dispatchEvent(ev);
+                return;
+            }
+            // Navigate to the progress view with the student selected
+            window.location.href = '?view=progress&student_id=' + encodeURIComponent(sid);
         });
     });
 
@@ -268,17 +289,11 @@ function initializeGoalsView() {
 
 // Progress Tracking Functions
 function initializeProgressView() {
-    const addProgressBtn = document.querySelector('.add-progress-btn');
-    if (addProgressBtn) {
-        addProgressBtn.addEventListener('click', function() {
-            const studentId = new URLSearchParams(window.location.search).get('student_id');
-            const goalId = this.getAttribute('data-goal-id');
-            if (studentId && goalId) {
-                showAddProgressModal(studentId, goalId);
-            } else {
-                showNotification('Please select a student and goal', 'error');
-            }
-        });
+    // Initialize progress view by calling the progress module when a student is selected
+    const urlParams = new URLSearchParams(window.location.search);
+    const studentId = urlParams.get('student_id');
+    if (studentId && progressModule && typeof progressModule.initializeProgress === 'function') {
+        try { progressModule.initializeProgress(Number(studentId)); } catch (e) { console.error('progress init failed', e); }
     }
 }
 
@@ -367,8 +382,6 @@ function navigateToView(view, params = '') {
 window.SLPDatabase = {
     showAddStudentModal,
     showAddGoalModal,
-    showAddProgressModal,
-    showQuickProgressModal,
     viewProfile,
     navigateToView,
     showNotification,
@@ -380,8 +393,6 @@ window.SLPDatabase = {
 // (Some pages use onclick="showAddStudentModal()" etc.)
 window.showAddStudentModal = showAddStudentModal;
 window.showAddGoalModal = showAddGoalModal;
-window.showAddProgressModal = showAddProgressModal;
-window.showQuickProgressModal = showQuickProgressModal;
 window.viewProfile = viewProfile;
 window.navigateToView = navigateToView;
 window.showNotification = showNotification;
@@ -468,7 +479,8 @@ window.toggleStudentDetails = toggleStudentDetails;
 
 // Remove student helper (asks for confirmation, calls API, updates DOM and selects)
 async function removeStudent(studentId) {
-    if (!confirm('Are you sure you want to remove this student? This action cannot be undone.')) return;
+    const ok = await (window.showConfirm ? window.showConfirm('Are you sure you want to remove this student? This action cannot be undone.') : Promise.resolve(confirm('Are you sure you want to remove this student? This action cannot be undone.')));
+    if (!ok) return;
     try {
         showNotification('Removing student...', 'info');
         const fd = new FormData();
@@ -552,7 +564,6 @@ async function editStudentProfile(studentId) {
     if (qs('#editGender')) qs('#editGender').value = student.gender || '';
     if (qs('#editPrimaryLanguage')) qs('#editPrimaryLanguage').value = student.primary_language || '';
     if (qs('#editServiceFrequency')) qs('#editServiceFrequency').value = student.service_frequency || '';
-    if (qs('#editTeacher')) qs('#editTeacher').value = student.teacher || '';
     if (qs('#editParentContact')) qs('#editParentContact').value = student.parent_contact || '';
     if (qs('#editMedicalInfo')) qs('#editMedicalInfo').value = student.medical_info || '';
     if (qs('#displayStudentId')) qs('#displayStudentId').textContent = student.student_id || student.id;

@@ -82,31 +82,7 @@ CREATE TABLE IF NOT EXISTS goals (
     FOREIGN KEY (therapist_id) REFERENCES users(id) ON DELETE SET NULL
 );
 
-CREATE TABLE IF NOT EXISTS progress_updates (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    student_id INTEGER NOT NULL,
-    reporting_period TEXT,
-    Progress_Summary TEXT,
-    Goal_Progress TEXT,
-    Challenges_Barriers TEXT,
-    Recommendations_Next_Steps TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
-);
-
--- Optional other_documents table for uncategorized forms (if you still want it)
-CREATE TABLE IF NOT EXISTS other_documents (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    student_id INTEGER,
-    title TEXT,
-    form_type TEXT,
-    therapist_id INTEGER,
-    metadata TEXT,
-    content TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
-    FOREIGN KEY (therapist_id) REFERENCES users(id) ON DELETE SET NULL
-);
+-- progress_updates table removed (progress reporting feature deprecated/removed)
 
 -- Activity log for dashboard recent activity
 CREATE TABLE IF NOT EXISTS activity_log (

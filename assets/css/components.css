@@ -106,6 +106,37 @@
     color: var(--text-color);
 }
 
+/* File viewer panel close button: keep circular like header close but scoped
+   to .modal-panel used by programmatically created viewers so we don't
+   affect other .close usages. */
+.modal-panel .close {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    padding: 0;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    border: 1px solid rgba(0,0,0,0.06);
+    background: var(--card-bg, #fff);
+    color: var(--muted);
+    font-size: 18px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    position: absolute;
+    right: 8px;
+    top: 8px;
+    z-index: 10001;
+}
+
+.modal-panel .close:hover {
+    background: var(--hover-bg, #f5f5f7);
+    color: var(--text-color);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-medium);
+}
+
 .modal-form {
     padding: 18px 20px 22px 20px;
 }
@@ -282,6 +313,51 @@
     padding-bottom: 10px;
 }
 
+/* Profile page accents and spacing improvements */
+.profile .section-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #1e3a8a; /* deep blue for headings */
+    margin-bottom: 12px;
+}
+.profile .section-title::before {
+    content: '';
+    width: 6px;
+    height: 24px;
+    background: linear-gradient(180deg, #2b6cb0, #1e40af);
+    border-radius: 4px;
+    display: inline-block;
+}
+
+/* Goals: increase spacing of the topics and refine goal cards */
+.goals-list-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-top: 12px; }
+.goal-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 10px; padding: 16px; box-shadow: var(--shadow-weak); }
+.goal-card-header { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+.goal-card .goal-body { margin-top:10px; color: #374151; font-size:0.96rem; line-height:1.45; }
+.goal-date { color: var(--muted); font-size:0.88rem; }
+
+/* Progress: remove bullets from skills list and tighten spacing */
+.profile .skill-titles ul { list-style: none; margin: 8px 0 0 0; padding: 0; }
+.profile .skill-titles li { padding: 6px 0; border-bottom: 1px dashed rgba(15,23,42,0.04); color: #111827; }
+.profile .skill-titles h4 { margin: 0 0 8px 0; color: #1e40af; font-size: 0.98rem; }
+
+/* Documentation list: clearer rows and spacing */
+.documentation-list-compact ul { list-style:none; margin:0; padding:0; display:block; }
+.doc-row { display:flex; gap:12px; align-items:center; padding:10px 12px; border-radius:8px; border:1px solid rgba(15,23,42,0.03); margin-bottom:8px; background: var(--card-bg); }
+.doc-title { flex:1; font-weight:600; color: #0f172a; }
+.doc-actions { display: flex; gap: 8px; }
+.doc-download { color: #1e40af; text-decoration:none; padding:6px 8px; border-radius:6px; border:1px solid rgba(30,64,175,0.08); background: rgba(30,64,175,0.04); }
+.doc-download:hover { background: rgba(30,64,175,0.08); }
+.doc-date { white-space: nowrap; }
+
+/* Slightly more prominent edit button and bottom padding */
+.profile-actions { padding-top: 18px; text-align:center; }
+.profile-actions .btn { background: #fff; border: 1px solid rgba(30,64,175,0.12); color: #1e40af; padding:8px 18px; border-radius:8px; }
+
+
 .search-forms .form-row {
     margin-bottom: 20px;
 }
@@ -369,6 +445,209 @@
     display: flex;
     gap: 8px;
 }
+
+/* Progress module styles */
+.skills-list {
+    display: block; /* stack vertically */
+    gap: 16px;
+    margin: 12px 0 24px;
+}
+.skill-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 14px;
+    box-shadow: var(--shadow-weak);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+}
+.skill-card .skill-header {
+    display:flex;align-items:center;justify-content:space-between;gap:8px;
+}
+.skill-card .skill-header .skill-cat { color: var(--muted); font-size: 0.9rem; }
+.skill-controls { display:flex; gap:8px; }
+.skill-current { font-size: 0.95rem; color: var(--muted); display:flex; align-items:center; gap:8px; }
+.skill-badge { font-size: 0.75rem; padding:4px 8px; border-radius:999px; font-weight:600; margin-left:8px; }
+.badge-achieved { background: rgba(34,197,94,0.12); color: #166534; border: 1px solid rgba(34,197,94,0.16); }
+.badge-working { background: rgba(59,130,246,0.08); color: #1e3a8a; border: 1px solid rgba(59,130,246,0.12); }
+.badge-alert { background: rgba(245,158,11,0.06); color: #7c2d12; border: 1px solid rgba(245,158,11,0.08); }
+.skill-card.achieved { box-shadow: 0 4px 12px rgba(16,185,129,0.06); }
+.skill-card.working { box-shadow: 0 4px 12px rgba(59,130,246,0.04); }
+.skill-card.needs-attention { box-shadow: 0 4px 12px rgba(245,158,11,0.04); }
+.skill-chart { height: 220px; width: 100%; }
+.skill-chart canvas { width: 100% !important; height: 220px !important; display:block; }
+.add-skill-card { display:flex; align-items:center; justify-content:center; cursor:pointer; color: var(--primary-600); border-style: dashed; }
+.add-skill-card .add-skill { font-size:1.05rem; font-weight:600; }
+
+/* Range input (slider) styling */
+input[type="range"] { -webkit-appearance:none; appearance:none; width:100%; height:6px; background:transparent; }
+input[type="range"]:focus { outline:none; }
+input[type="range"]::-webkit-slider-runnable-track { height:6px; background: linear-gradient(90deg,#cbd5e1,#e2e8f0); border-radius:6px; }
+input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:18px; height:18px; background:var(--primary-600); border-radius:50%; margin-top:-6px; box-shadow: 0 2px 6px rgba(0,0,0,0.12); }
+input[type="range"]::-moz-range-track { height:6px; background: linear-gradient(90deg,#cbd5e1,#e2e8f0); border-radius:6px; }
+input[type="range"]::-moz-range-thumb { width:18px; height:18px; background:var(--primary-600); border-radius:50%; box-shadow: 0 2px 6px rgba(0,0,0,0.12); }
+
+@media (max-width: 900px) {
+    .skills-list { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+    .skill-chart { height: 100px; }
+}
+
+/* progress toolbar */
+.progress-toolbar { display:flex; justify-content:space-between; align-items:center; gap:12px; background: #f7fafc; padding: 12px; border-radius:8px; border:1px solid var(--border-color); margin-bottom:14px; }
+.progress-toolbar .toolbar-left { display:flex; gap:12px; align-items:center; }
+.progress-toolbar .toolbar-left-stacked { flex-direction: column; align-items: flex-start; gap: 8px; }
+.progress-toolbar .toolbar-left-stacked .toolbar-select-wrap { display:flex; flex-direction:column; gap:6px; }
+.progress-toolbar .toolbar-left-stacked label { font-size: 0.9rem; color: var(--figma-muted); }
+.progress-toolbar .toolbar-left-stacked select { min-width: 220px; max-width: 360px; }
+.progress-toolbar label { font-weight:600; color:var(--muted); margin-right:6px; }
+.progress-toolbar select { padding:8px 10px; border-radius:8px; border:1px solid var(--border-color); }
+.progress-toolbar .toolbar-right { display:flex; gap:8px; align-items:center; }
+
+.skill-card { padding:14px; }
+.skill-current { font-size:1rem; }
+.skill-header strong { font-size:1rem; }
+
+/* Figma-approximate theme for Progress page */
+:root {
+    --figma-bg: #f4f7fb;
+    --figma-panel: #ffffff;
+    --figma-muted: #6b7280;
+    --figma-accent: #2b6cb0; /* bluish */
+    --progress-achieved: #16a34a;
+    --progress-working: #f59e0b;
+    --progress-alert: #f97316;
+}
+
+/* Page-level background for progress area */
+.progress-overview { background: var(--figma-bg); padding: 18px; border-radius: 10px; border: 1px solid rgba(15,23,42,0.04); }
+
+/* toolbar refinement */
+.progress-toolbar { background: transparent; border: none; padding: 6px 0 18px 0; }
+.progress-toolbar .toolbar-left label { color: var(--figma-muted); font-weight:600; margin-right:6px; }
+.progress-toolbar select { background: var(--figma-panel); border: 1px solid rgba(15,23,42,0.06); padding:8px 10px; }
+.progress-toolbar .toolbar-right .btn { border-radius: 999px; padding: 8px 14px; }
+
+/* Align header spacing for Progress page to match other pages and reduce layout shift */
+.page-header.stack h3 {
+    /* Remove default h3 margins inside stacked headers so the action button stays aligned */
+    margin: 0;
+}
+
+/* Small student-name element under the page title to show the selected student's name
+   without causing layout shift when it appears. Kept visually subtle. */
+.progress-student-name {
+    height: 20px; /* fixed height to reserve space so inserting text won't push layout */
+    line-height: 20px;
+    color: #374151; /* neutral dark */
+    font-weight: 600;
+    margin-top: 0; /* avoid extra gap */
+    font-size: 0.95rem;
+    white-space: nowrap;       /* prevent wrapping which would increase height */
+    overflow: hidden;
+    text-overflow: ellipsis;  /* truncate long names */
+}
+
+/* Ensure the primary action inside the progress toolbar keeps a fixed height and aligns
+   vertically with the select control so switching between empty/filled states doesn't
+   cause a vertical jump. */
+.progress-toolbar .primary-action-left {
+    height: 40px; /* fixed height matching typical .btn size */
+    display: inline-flex;
+    align-items: center;
+    padding: 0 12px;
+}
+
+/* student name element removed; no reserved header space required */
+
+.progress-toolbar {
+    /* ensure a small, consistent gap beneath the header so transitions feel smooth */
+    margin-top: 8px;
+}
+
+/* Skill card styling to match Figma blocks */
+.skill-card { background: linear-gradient(180deg, rgba(255,255,255,0.9), rgba(255,255,255,0.95)); border-radius: 10px; border: 1px solid rgba(15,23,42,0.06); }
+.skill-card .skill-header { padding-bottom:6px; }
+.skill-card .skill-desc { color: var(--figma-muted); font-size:0.95rem; margin-top:6px; }
+
+/* larger current/target area */
+.skill-current { display:flex; align-items:center; gap:12px; }
+.skill-current .skill-current-score { background: rgba(255,255,255,0.9); border-radius:8px; padding:6px 10px; border:1px solid rgba(0,0,0,0.06); font-weight:600; }
+
+/* When the target label sits at the top of the chart (e.g., Target: 100%),
+   add extra top spacing so the dashed target label doesn't overlap the chart area */
+.skill-card.target-top-space .skill-chart { margin-top: 18px; }
+
+/* ensure the percentage inside the current-score element fits visually */
+.skill-current .skill-current-score { display:inline-block; min-width:42px; text-align:right; }
+
+/* Status badges (rounded pill) */
+.skill-badge { padding:6px 10px; border-radius:999px; font-size:0.78rem; box-shadow: none; }
+.badge-achieved { background: rgba(22,163,74,0.12); color: var(--progress-achieved); border: 1px solid rgba(16,185,129,0.14); }
+.badge-working { background: rgba(245,158,11,0.06); color: var(--progress-working); border: 1px solid rgba(245,158,11,0.1); }
+.badge-alert { background: rgba(249,115,22,0.06); color: var(--progress-alert); border: 1px solid rgba(249,115,22,0.1); }
+
+/* slider visual: make track subtle and thumb colored; include a pill background for the track */
+.skill-controls input[type="range"] { height:8px; border-radius:8px; background: linear-gradient(90deg,#e6eefc,#eef2ff); }
+.skill-controls input[type="range"]::-webkit-slider-thumb { width:18px; height:18px; margin-top:-5px; background: var(--figma-accent); border-radius:50%; box-shadow: 0 2px 6px rgba(43,108,176,0.24); }
+
+/* add-skill tile matches Figma with light border and large + */
+.add-skill-card { min-height:120px; background: rgba(255,255,255,0.6); border-radius:8px; border:2px dashed rgba(15,23,42,0.04); display:flex; align-items:center; justify-content:center; }
+.add-skill-card .add-skill { font-size:1.1rem; color:var(--figma-muted); }
+
+/* small utility: subtle unlock button look */
+.unlock-btn { background: rgba(255,255,255,0.9); border: 1px solid rgba(15,23,42,0.06); padding:6px 8px; border-radius:6px; font-size:0.85rem; color:var(--figma-muted); }
+
+/* Icon-style small buttons used inside forms (lock/unlock) */
+.icon-btn {
+    width: 34px;
+    height: 34px;
+    padding: 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--card-bg);
+    border: 1px solid rgba(15,23,42,0.06);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background-color 0.12s ease, transform 0.12s ease, box-shadow 0.12s ease;
+}
+.icon-btn svg { width: 18px; height: 18px; }
+.icon-btn:not(.unlocked) svg path, .icon-btn:not(.unlocked) svg rect { fill: #6b7280; stroke: #6b7280; }
+.icon-btn.unlocked { background: linear-gradient(180deg, rgba(59,130,246,0.06), rgba(59,130,246,0.04)); border-color: rgba(59,130,246,0.12); }
+.icon-btn.unlocked svg path, .icon-btn.unlocked svg rect { fill: #1e40af; stroke: #1e40af; }
+.icon-btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-medium); }
+
+/* Small label next to lock button to indicate state */
+.lock-status {
+    font-size: 0.85rem;
+    color: var(--muted);
+    padding-left: 6px;
+}
+.icon-btn.unlocked + .lock-status { color: #1e40af; font-weight:600; }
+
+/* inline field error messages */
+.field-error {
+    margin-top: 6px;
+    color: #b91c1c; /* red-700 */
+    font-size: 0.85rem;
+    min-height: 18px;
+}
+
+/* History modal styles */
+.history-list { display:flex; flex-direction:column; gap:12px; margin-top:12px; }
+.history-item { padding:12px; background: var(--card-bg); border: 1px solid var(--border-color); border-radius:8px; }
+.history-row { display:flex; justify-content:space-between; gap:12px; align-items:center; }
+.history-date { color:var(--muted); font-size:0.9rem; }
+.history-score { font-weight:600; }
+.history-notes { margin-top:8px; color: #374151; font-size:0.95rem; }
+.history-empty { padding:12px; color:var(--muted); }
+
+@media (max-width: 900px) {
+    .skills-list { grid-template-columns: 1fr; }
+}
+
 
 .existing-form-actions .btn {
     padding: 6px 12px;
