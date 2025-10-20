@@ -538,7 +538,7 @@ textarea::-webkit-resizer { display: none; }
 }
 
 /* Student list as buttons */
-.students-grid, .goals-list, .reports-grid, .progress-list-grid {
+.students-grid, .goals-list, .progress-list-grid {
     display: flex;
     flex-wrap: wrap;
     gap: 12px;

@@ -84,25 +84,23 @@ try {
                 $exists = (int)$stmt->fetchColumn() > 0;
             } while ($exists);
 
-            // Persist additional profile fields that the UI collects
-            $stmt = $pdo->prepare('INSERT INTO students (student_id, first_name, last_name, grade, date_of_birth, gender, primary_language, service_frequency, parent_contact, medical_info, created_at, updated_at) VALUES (:student_id, :first_name, :last_name, :grade, :date_of_birth, :gender, :primary_language, :service_frequency, :parent_contact, :medical_info, :created_at, :updated_at)');
-            $stmt->execute([
-                ':student_id' => $studentIdCandidate,
-                ':first_name' => $firstName,
-                ':last_name'  => $lastName,
-                ':grade'      => $_POST['grade'] ?? '',
-                ':date_of_birth' => $_POST['date_of_birth'] ?? '',
-                // ':age' intentionally omitted (use date_of_birth and grade instead)
-                ':gender'     => $_POST['gender'] ?? '',
-                ':primary_language' => $_POST['primary_language'] ?? '',
-                ':service_frequency' => $_POST['service_frequency'] ?? '',
-                ':parent_contact' => $_POST['parent_contact'] ?? '',
-                ':medical_info' => $_POST['medical_info'] ?? '',
-                ':created_at' => date('c'),
-                ':updated_at' => date('c'),
+            // Persist additional profile fields that the UI collects (schema-aware; include user_id when available)
+            $id = (int)$safe_insert('students', [
+                'student_id' => $studentIdCandidate,
+                'first_name' => $firstName,
+                'last_name'  => $lastName,
+                'grade'      => $_POST['grade'] ?? '',
+                'date_of_birth' => $_POST['date_of_birth'] ?? '',
+                // 'age' intentionally omitted (use date_of_birth and grade instead)
+                'gender'     => $_POST['gender'] ?? '',
+                'primary_language' => $_POST['primary_language'] ?? '',
+                'service_frequency' => $_POST['service_frequency'] ?? '',
+                'parent_contact' => $_POST['parent_contact'] ?? '',
+                'medical_info' => $_POST['medical_info'] ?? '',
+                'user_id' => $_SESSION['user_id'] ?? null,
+                'created_at' => date('c'),
+                'updated_at' => date('c'),
             ]);
-
-            $id = (int)$pdo->lastInsertId();
 
             // create initial profile file and add documents row
             // Persist the profile document into the documents table in the DB (no filesystem writes)
@@ -126,63 +124,70 @@ try {
             }
             // Attach the current user as therapist when available so dashboard can attribute goals
             $userId = $_SESSION['user_id'] ?? null;
-            $stmt = $pdo->prepare('INSERT INTO goals (student_id, title, description, status, therapist_id, created_at) VALUES (:student_id, :title, :description, :status, :therapist_id, :created_at)');
-            $stmt->execute([
-                ':student_id' => $goal_student,
-                ':title' => $_POST['goal_area'] ?? '',
-                ':status' => 'active',
-                ':therapist_id' => $userId,
-                ':created_at' => date('c'),
+            // Schema-aware insert (include description/user_id only if columns exist)
+            $id = (int)$safe_insert('goals', [
+                'student_id' => $goal_student,
+                'title' => $_POST['goal_area'] ?? '',
+                'description' => $goal_text,
+                'status' => 'active',
+                'therapist_id' => $userId,
+                'user_id' => $userId,
+                'created_at' => date('c'),
             ]);
-            $id = (int)$pdo->lastInsertId();
             // Record activity for dashboard
             try { record_activity('goal_created', (int)($_POST['student_id'] ?? 0), 'Goal created', ['goal_id' => $id]); } catch (Throwable $e) {}
             echo json_encode(['success'=>true,'id'=>$id]);
             break;
         }
 
-        // Add progress update -> insert into progress_updates
-        case 'add_progress': {
-            $note = trim($_POST['notes'] ?? ($_POST['text'] ?? ''));
-            $progress_student = isset($_POST['student_id']) ? (int)$_POST['student_id'] : 0;
-            // Server-side validation: require student and non-empty note
-            if (!$progress_student || $note === '') {
-                echo json_encode(['success'=>false,'error'=>'Student and progress note are required','message'=>'Student and progress note are required']);
-                break;
-            }
-            $stmt = $pdo->prepare('INSERT INTO progress_updates (student_id, note, created_at) VALUES (:student_id, :note, :created_at)');
-            $stmt->execute([
-                ':student_id' => $progress_student,
-                ':note' => $note,
-                ':created_at' => date('c'),
-            ]);
-            $id = (int)$pdo->lastInsertId();
-            try { record_activity('progress_update', (int)($_POST['student_id'] ?? 0), 'Progress update added', ['progress_id' => $id]); } catch (Throwable $e) {}
-            echo json_encode(['success'=>true,'id'=>$id]);
-            break;
-        }
+        
 
-        // Generate a full student progress report (PDF if wkhtmltopdf available, else HTML snapshot)
+        // Generate a full student progress report and return inline HTML (no file writes)
         case 'generate_student_report': {
             $studentId = isset($_POST['student_id']) ? (int)$_POST['student_id'] : 0;
             if (!$studentId) { echo json_encode(['success'=>false,'error'=>'Student ID required','message'=>'Student ID required']); break; }
             try {
-                $stmt = $pdo->prepare('SELECT * FROM students WHERE id = :id LIMIT 1'); $stmt->execute([':id'=>$studentId]); $student = $stmt->fetch(PDO::FETCH_ASSOC);
+                // Scope by user when column exists; allow NULL user_id for legacy rows
+                $student = null;
+                try {
+                    $ti = $pdo->query("PRAGMA table_info('students')");
+                    $cols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name');
+                    if (in_array('user_id', $cols)) {
+                        $stmt = $pdo->prepare('SELECT * FROM students WHERE id = :id AND (user_id = :uid OR user_id IS NULL) LIMIT 1');
+                        $stmt->execute([':id'=>$studentId, ':uid'=>($_SESSION['user_id'] ?? -1)]);
+                    } else {
+                        $stmt = $pdo->prepare('SELECT * FROM students WHERE id = :id LIMIT 1');
+                        $stmt->execute([':id'=>$studentId]);
+                    }
+                    $student = $stmt->fetch(PDO::FETCH_ASSOC);
+                } catch (Throwable $_e) {
+                    $stmt = $pdo->prepare('SELECT * FROM students WHERE id = :id LIMIT 1'); $stmt->execute([':id'=>$studentId]); $student = $stmt->fetch(PDO::FETCH_ASSOC);
+                }
                 if (!$student) { echo json_encode(['success'=>false,'error'=>'Student not found']); break; }
 
+                // Gather related data (skills, goals)
                 $skills = [];
-                try { $ps = $pdo->prepare('SELECT * FROM progress_skills WHERE student_id = :sid ORDER BY id'); $ps->execute([':sid'=>$studentId]); $skills = $ps->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) {}
+                try {
+                    $ti = $pdo->prepare("PRAGMA table_info('progress_skills')"); $ti->execute(); $pcols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name');
+                    $sql = 'SELECT * FROM progress_skills WHERE student_id = :sid'; $params = [':sid' => $studentId];
+                    if (in_array('user_id', $pcols)) { $sql .= ' AND (user_id = :uid OR user_id IS NULL)'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+                    $sql .= ' ORDER BY id';
+                    $ps = $pdo->prepare($sql); $ps->execute($params); $skills = $ps->fetchAll(PDO::FETCH_ASSOC);
+                } catch (Throwable $e) {}
+
                 $student_goals = [];
-                try { $gq = $pdo->prepare('SELECT * FROM goals WHERE student_id = :sid ORDER BY created_at DESC'); $gq->execute([':sid'=>$studentId]); $student_goals = $gq->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) {}
+                try {
+                    $ti = $pdo->prepare("PRAGMA table_info('goals')"); $ti->execute(); $gcols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name');
+                    $sql = 'SELECT * FROM goals WHERE student_id = :sid'; $params = [':sid' => $studentId];
+                    if (in_array('user_id', $gcols)) { $sql .= ' AND (user_id = :uid OR user_id IS NULL)'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+                    $sql .= ' ORDER BY created_at DESC';
+                    $gq = $pdo->prepare($sql); $gq->execute($params); $student_goals = $gq->fetchAll(PDO::FETCH_ASSOC);
+                } catch (Throwable $e) {}
+
+                // Optionally limit updates to a report cutoff if requested
                 $skill_updates = [];
                 try {
-                    // By default include all progress_updates (so the generated report reflects the
-                    // latest DB state visible on the progress page). Only apply a cutoff from
-                    // progress_reports when the client explicitly requests a snapshot using
-                    // either `report_id` (specific report) or `use_report_cutoff` (boolean-like).
-                    $report_cutoff = null;
-                    $applyCutoff = false;
-                    // If client asked for a specific report id, use that report's created_at
+                    $report_cutoff = null; $applyCutoff = false;
                     if (!empty($_POST['report_id'])) {
                         $applyCutoff = true;
                         try {
@@ -196,7 +201,6 @@ try {
                             }
                         } catch (Throwable $_e) { /* ignore */ }
                     } elseif (!empty($_POST['use_report_cutoff'])) {
-                        // use latest progress_reports row as cutoff when explicitly requested
                         $applyCutoff = true;
                         try {
                             $pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='progress_reports'"); $pi->execute();
@@ -211,40 +215,33 @@ try {
 
                     if (!empty($skills)) {
                         foreach (array_column($skills,'id') as $sid) {
+                            try { $tuu = $pdo->prepare("PRAGMA table_info('progress_updates')"); $tuu->execute(); $ucols = array_column($tuu->fetchAll(PDO::FETCH_ASSOC), 'name'); } catch (Throwable $_e) { $ucols = []; }
                             if ($applyCutoff && $report_cutoff) {
-                                $pu = $pdo->prepare('SELECT * FROM progress_updates WHERE skill_id = :sid AND (created_at IS NULL OR created_at <= :cutoff) ORDER BY created_at');
-                                $pu->execute([':sid' => $sid, ':cutoff' => $report_cutoff]);
+                                $sql = 'SELECT * FROM progress_updates WHERE skill_id = :sid AND (created_at IS NULL OR created_at <= :cutoff)';
+                                $params = [':sid' => $sid, ':cutoff' => $report_cutoff];
+                                if (in_array('user_id', $ucols)) { $sql .= ' AND (user_id = :uid OR user_id IS NULL)'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+                                $sql .= ' ORDER BY created_at';
+                                $pu = $pdo->prepare($sql); $pu->execute($params);
                             } else {
-                                $pu = $pdo->prepare('SELECT * FROM progress_updates WHERE skill_id = :sid ORDER BY created_at');
-                                $pu->execute([':sid' => $sid]);
+                                $sql = 'SELECT * FROM progress_updates WHERE skill_id = :sid';
+                                $params = [':sid' => $sid];
+                                if (in_array('user_id', $ucols)) { $sql .= ' AND (user_id = :uid OR user_id IS NULL)'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+                                $sql .= ' ORDER BY created_at';
+                                $pu = $pdo->prepare($sql); $pu->execute($params);
                             }
                             $skill_updates[$sid] = $pu->fetchAll(PDO::FETCH_ASSOC);
                         }
                     }
                 } catch (Throwable $e) {}
 
-                // Prepare export directory
-                $outDir = __DIR__ . '/../dev/exports'; if (!is_dir($outDir)) @mkdir($outDir,0755,true);
-                $imagesDir = $outDir . '/report_images'; if (!is_dir($imagesDir)) @mkdir($imagesDir,0755,true);
-
-                // Collect chart images from POST JSON 'chart_images' (data URLs) and uploaded files.
+                // Collect chart images from POST JSON 'chart_images' (data URLs) and uploaded files, embedding as data URIs only.
                 $chart_images = [];
                 if (!empty($_POST['chart_images'])) {
                     $decoded = json_decode($_POST['chart_images'], true);
                     if (is_array($decoded)) {
                         foreach ($decoded as $cid => $dataUrl) {
                             if (!is_string($dataUrl) || stripos($dataUrl, 'data:') !== 0) continue;
-                            try {
-                                // Persist a copy on disk for auditing/exports but ALSO keep the original data URI
-                                $ts = time(); $fn = 'chart_' . preg_replace('/[^A-Za-z0-9_\-]/','_', (string)$cid) . '_' . $ts . '.png';
-                                $outPath = $imagesDir . DIRECTORY_SEPARATOR . $fn;
-                                if (preg_match('/^data:(image\/[^;]+);base64,(.+)$/', $dataUrl, $m)) {
-                                    $bin = base64_decode($m[2]);
-                                    if ($bin !== false) file_put_contents($outPath, $bin);
-                                }
-                                // Keep the original data URI so the template embeds the image inline (works with wkhtmltopdf)
-                                $chart_images[$cid] = $dataUrl;
-                            } catch (Throwable $e) { }
+                            try { $chart_images[$cid] = $dataUrl; } catch (Throwable $e) { }
                         }
                     }
                 }
@@ -255,268 +252,90 @@ try {
                         $cid = substr($k, strlen('chart_image_'));
                         try {
                             $orig = $f['tmp_name'];
-                            $ext = pathinfo($f['name'] ?? 'img.png', PATHINFO_EXTENSION) ?: 'png';
-                            $fn = 'chart_' . preg_replace('/[^A-Za-z0-9_\-]/','_', (string)$cid) . '_' . time() . '.' . $ext;
-                            $outPath = $imagesDir . DIRECTORY_SEPARATOR . $fn;
-                            if (is_uploaded_file($orig)) move_uploaded_file($orig, $outPath);
-                            else @copy($orig, $outPath);
-                            // Read the stored file and create a data URI so the template embeds inline images
                             $mime = 'image/png';
-                            if (function_exists('finfo_open')) {
-                                $finfo = finfo_open(FILEINFO_MIME_TYPE);
-                                $det = finfo_file($finfo, $outPath);
-                                if ($det) $mime = $det;
-                                finfo_close($finfo);
-                            } elseif (function_exists('mime_content_type')) {
-                                $det = mime_content_type($outPath);
-                                if ($det) $mime = $det;
-                            }
-                            $bin = @file_get_contents($outPath);
-                            if ($bin !== false) {
-                                $b64 = base64_encode($bin);
-                                $chart_images[$cid] = 'data:' . $mime . ';base64,' . $b64;
-                            } else {
-                                // fallback to file path (relative) if file couldn't be read
-                                $chart_images[$cid] = 'dev/exports/report_images/' . $fn;
-                            }
+                            if (!empty($f['type'])) { $mime = $f['type']; }
+                            else if (function_exists('finfo_open')) { $finfo = finfo_open(FILEINFO_MIME_TYPE); $det = finfo_file($finfo, $orig); if ($det) $mime = $det; finfo_close($finfo); }
+                            elseif (function_exists('mime_content_type')) { $det = @mime_content_type($orig); if ($det) $mime = $det; }
+                            $bin = @file_get_contents($orig);
+                            if ($bin !== false) { $b64 = base64_encode($bin); $chart_images[$cid] = 'data:' . $mime . ';base64,' . $b64; }
                         } catch (Throwable $e) { }
                     }
                 }
 
-                // Render HTML snapshot (template will use $chart_images variable if present)
-                $timestamp = time(); $safeName = preg_replace('/[^A-Za-z0-9_\-]/','_',($student['student_id'] ?? 'student_'.$studentId));
-                // attempt to load a report title from progress_reports (preferred) or student_reports
+                // Build a contextual title if one exists
                 $report_title = null;
                 try {
                     $pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='progress_reports'"); $pi->execute();
                     if ($pi->fetchColumn()) {
-                        $pt = $pdo->prepare('SELECT title FROM progress_reports WHERE student_id = :sid ORDER BY created_at DESC LIMIT 1'); $pt->execute([':sid'=>$studentId]); $ptRow = $pt->fetch(PDO::FETCH_ASSOC); if ($ptRow && !empty($ptRow['title'])) $report_title = $ptRow['title'];
+                        $pt = $pdo->prepare('SELECT title FROM progress_reports WHERE student_id = :sid ORDER BY created_at DESC LIMIT 1');
+                        $pt->execute([':sid'=>$studentId]);
+                        $ptRow = $pt->fetch(PDO::FETCH_ASSOC);
+                        if ($ptRow && !empty($ptRow['title'])) $report_title = $ptRow['title'];
                     } else {
-                        $pi2 = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='student_reports'"); $pi2->execute(); if ($pi2->fetchColumn()) { $srq = $pdo->prepare('SELECT status FROM student_reports WHERE student_id = :sid LIMIT 1'); $srq->execute([':sid'=>$studentId]); $srw = $srq->fetch(PDO::FETCH_ASSOC); if ($srw && !empty($srw['status'])) $report_title = ucfirst($srw['status']) . ' Report'; }
+                        $pi2 = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='student_reports'"); $pi2->execute();
+                        if ($pi2->fetchColumn()) {
+                            $srq = $pdo->prepare('SELECT status FROM student_reports WHERE student_id = :sid LIMIT 1');
+                            $srq->execute([':sid'=>$studentId]);
+                            $srw = $srq->fetch(PDO::FETCH_ASSOC);
+                            if ($srw && !empty($srw['status'])) $report_title = ucfirst($srw['status']) . ' Report';
+                        }
                     }
                 } catch (Throwable $e) { /* ignore */ }
 
-                ob_start(); include __DIR__ . '/../templates/student_report.php'; $html = ob_get_clean();
-                $htmlFile = $outDir . DIRECTORY_SEPARATOR . $safeName . '_report_' . $timestamp . '.html'; file_put_contents($htmlFile, $html);
-
-                // Detect PDF engine and attempt PDF generation; fall back to snapshot
-                $pdfFile = $outDir . DIRECTORY_SEPARATOR . $safeName . '_progress.pdf';
-
-                // Build candidate paths/commands. Allow overriding via WKHTMLTOPDF_PATH in includes/config.php
-                $wkCandidates = [];
-                if (defined('WKHTMLTOPDF_PATH') && WKHTMLTOPDF_PATH) $wkCandidates[] = WKHTMLTOPDF_PATH;
-                // prefer PATH lookup name
-                $wkCandidates[] = 'wkhtmltopdf';
-                // common platform-specific install locations
-                if (DIRECTORY_SEPARATOR === '\\') {
-                    $wkCandidates[] = 'C:\\Program Files\\wkhtmltopdf\\bin\\wkhtmltopdf.exe';
-                    $wkCandidates[] = 'C:\\Program Files (x86)\\wkhtmltopdf\\bin\\wkhtmltopdf.exe';
-                } else {
-                    $wkCandidates[] = '/usr/local/bin/wkhtmltopdf';
-                    $wkCandidates[] = '/usr/bin/wkhtmltopdf';
-                }
-
-                $wkBin = null;
-                foreach ($wkCandidates as $cand) {
-                    $cand = trim((string)$cand);
-                    if ($cand === '') continue;
-                    // If a full path exists and is executable, prefer it
-                    if (file_exists($cand) && is_executable($cand)) { $wkBin = $cand; break; }
-                    // Otherwise try running --version to verify availability (works for PATH names and some paths)
-                    try { exec(escapeshellcmd($cand) . ' --version 2>&1', $o, $rc); if ($rc === 0 && !empty($o)) { $wkBin = $cand; break; } } catch (Throwable $e) {}
-                }
-
-                $pdfEngine = $wkBin ? 'wkhtmltopdf' : null;
-
-                if ($pdfEngine === null) {
-                    $rel = 'dev/exports/' . basename($htmlFile);
-                    $pdo->exec("CREATE TABLE IF NOT EXISTS student_reports (student_id INTEGER PRIMARY KEY, path TEXT, created_at TEXT, updated_at TEXT, created_by INTEGER, status TEXT)");
-                    $nowc = date('c'); $newStatus = 'snapshot';
-                    $stmtUp = $pdo->prepare('INSERT INTO student_reports (student_id, path, created_at, updated_at, created_by, status) VALUES (:student_id, :path, :created_at, :updated_at, :created_by, :status) ON CONFLICT(student_id) DO UPDATE SET path = :path_up, updated_at = :updated_at_up, created_by = :created_by_up, status = :status_up');
-                    $stmtUp->execute([':student_id'=>$studentId,':path'=>$rel,':created_at'=>$nowc,':updated_at'=>$nowc,':created_by'=>$_SESSION['user_id'] ?? null,':status'=>$newStatus,':path_up'=>$rel,':updated_at_up'=>$nowc,':created_by_up'=>$_SESSION['user_id'] ?? null,':status_up'=>$newStatus]);
-                    echo json_encode(['success'=>true,'path'=>$rel,'filename'=>basename($htmlFile),'report'=>['student_id'=>$studentId,'path'=>$rel,'status'=>$newStatus]]);
-                    break;
-                }
-
-                // Attempt to create PDF using detected wkhtmltopdf binary
-                $bin = $wkBin ?: 'wkhtmltopdf';
-                $cmd = escapeshellcmd($bin) . ' ' . escapeshellarg($htmlFile) . ' ' . escapeshellarg($pdfFile) . ' 2>&1'; exec($cmd,$out,$rc);
-                if ($rc !== 0 || !file_exists($pdfFile)) { echo json_encode(['success'=>false,'error'=>'PDF generation failed']); break; }
-
-                // Attempt to append any student PDFs (from other_documents.file_path) to the generated PDF
-                try {
-                    $appendPdfs = [];
-                    $st = $pdo->prepare('SELECT file_path FROM other_documents WHERE student_id = :sid AND file_path IS NOT NULL');
-                    $st->execute([':sid' => $studentId]);
-                    $imageExtensions = ['png','jpg','jpeg','gif','webp','tiff','bmp'];
-                    $imageToPdfCandidates = [];
-                    foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
-                        if (empty($r['file_path'])) continue;
-                        $candidate = __DIR__ . '/../' . ltrim($r['file_path'], '/\\');
-                        if (!file_exists($candidate)) continue;
-                        $ext = strtolower(pathinfo($candidate, PATHINFO_EXTENSION));
-                        if ($ext === 'pdf') {
-                            $appendPdfs[] = $candidate;
-                        } elseif (in_array($ext, $imageExtensions)) {
-                            $imageToPdfCandidates[] = $candidate;
-                        }
-                    }
-
-                    // If there are image attachments, try to convert them to PDFs for merging
-                    if (!empty($imageToPdfCandidates)) {
-                        // discover ImageMagick binary (magick preferred, then convert)
-                        $imCandidates = [];
-                        $imCandidates[] = 'magick';
-                        $imCandidates[] = 'convert';
-                        if (DIRECTORY_SEPARATOR === '\\') {
-                            $imCandidates[] = 'C:\\Program Files\\ImageMagick-7.0.10-Q16\\magick.exe';
-                            $imCandidates[] = 'C:\\Program Files\\ImageMagick-7.0.10-Q16\\convert.exe';
-                        } else {
-                            $imCandidates[] = '/usr/bin/magick';
-                            $imCandidates[] = '/usr/bin/convert';
-                            $imCandidates[] = '/usr/local/bin/magick';
-                            $imCandidates[] = '/usr/local/bin/convert';
-                        }
-                        $imBin = null;
-                        foreach ($imCandidates as $cand) {
-                            $cand = trim((string)$cand);
-                            if ($cand === '') continue;
-                            if (file_exists($cand) && is_executable($cand)) { $imBin = $cand; break; }
-                            try { exec(escapeshellcmd($cand) . ' -version 2>&1', $io, $irc); if ($irc === 0 && !empty($io)) { $imBin = $cand; break; } } catch (Throwable $e) {}
-                        }
-
-                        if ($imBin) {
-                            foreach ($imageToPdfCandidates as $img) {
-                                try {
-                                    $outPdf = $outDir . DIRECTORY_SEPARATOR . $safeName . '_img_' . md5($img . time()) . '.pdf';
-                                    // Use ImageMagick to convert image -> PDF
-                                    $cmd = escapeshellcmd($imBin) . ' ' . escapeshellarg($img) . ' ' . escapeshellarg($outPdf) . ' 2>&1';
-                                    exec($cmd, $imOut, $imRc);
-                                    if ($imRc === 0 && file_exists($outPdf)) {
-                                        $appendPdfs[] = $outPdf;
-                                    } else {
-                                        try { @file_put_contents(__DIR__ . '/../dev/logs/pdf_merge_errors.log', date('c') . " - ImageMagick conversion failed for {$img}: " . implode("\n", (array)$imOut) . "\n", FILE_APPEND | LOCK_EX); } catch (Throwable $_e) {}
-                                    }
-                                } catch (Throwable $e) {
-                                    try { @file_put_contents(__DIR__ . '/../dev/logs/pdf_merge_errors.log', date('c') . " - image->pdf exception for {$img}: " . $e->getMessage() . "\n", FILE_APPEND | LOCK_EX); } catch (Throwable $_e) {}
-                                }
-                            }
-                        } else {
-                            try { @file_put_contents(__DIR__ . '/../dev/logs/pdf_merge_errors.log', date('c') . " - ImageMagick not found; skipping image->PDF conversion\n", FILE_APPEND | LOCK_EX); } catch (Throwable $_e) {}
-                        }
-                    }
-
-                    if (!empty($appendPdfs)) {
-                        // Discover Ghostscript binary
-                        $gsCandidates = [];
-                        if (defined('GS_BIN') && GS_BIN) $gsCandidates[] = GS_BIN;
-                        $gsCandidates[] = 'gs';
-                        $gsCandidates[] = 'gswin64c';
-                        $gsCandidates[] = 'gswin32c';
-                        if (DIRECTORY_SEPARATOR === '\\') {
-                            $gsCandidates[] = 'C:\\Program Files\\gs\\bin\\gswin64c.exe';
-                            $gsCandidates[] = 'C:\\Program Files (x86)\\gs\\bin\\gswin32c.exe';
-                        } else {
-                            $gsCandidates[] = '/usr/local/bin/gs';
-                            $gsCandidates[] = '/usr/bin/gs';
-                        }
-
-                        $gsBin = null;
-                        foreach ($gsCandidates as $cand) {
-                            $cand = trim((string)$cand);
-                            if ($cand === '') continue;
-                            if (file_exists($cand) && is_executable($cand)) { $gsBin = $cand; break; }
-                            try { exec(escapeshellcmd($cand) . ' --version 2>&1', $o, $gRc); if ($gRc === 0 && !empty($o)) { $gsBin = $cand; break; } } catch (Throwable $e) {}
-                        }
-
-                        if ($gsBin) {
-                            $sources = array_merge([$pdfFile], $appendPdfs);
-                            $mergedFile = $outDir . DIRECTORY_SEPARATOR . $safeName . '_progress_merged_' . time() . '.pdf';
-                            $gsCmd = escapeshellcmd($gsBin) . ' -dBATCH -dNOPAUSE -q -sDEVICE=pdfwrite -sOutputFile=' . escapeshellarg($mergedFile) . ' ' . implode(' ', array_map('escapeshellarg', $sources)) . ' 2>&1';
-                            exec($gsCmd, $gout, $grc);
-                            if ($grc === 0 && file_exists($mergedFile)) {
-                                @unlink($pdfFile);
-                                $pdfFile = $mergedFile;
-                            } else {
-                                try { @file_put_contents(__DIR__ . '/../dev/logs/pdf_merge_errors.log', date('c') . " - gs merge failed: " . implode("\n", (array)$gout) . "\n", FILE_APPEND | LOCK_EX); } catch (Throwable $e) {}
-                            }
-                        } else {
-                            // Ghostscript not available — skipping merge
-                        }
-                    }
-                } catch (Throwable $e) {
-                    try { @file_put_contents(__DIR__ . '/../dev/logs/pdf_merge_errors.log', date('c') . " - merge exception: " . $e->getMessage() . "\n", FILE_APPEND | LOCK_EX); } catch (Throwable $_e) {}
-                }
-
-                $rel = 'dev/exports/' . basename($pdfFile);
-                $pdo->exec("CREATE TABLE IF NOT EXISTS student_reports (student_id INTEGER PRIMARY KEY, path TEXT, created_at TEXT, updated_at TEXT, created_by INTEGER, status TEXT)");
-                $nowc = date('c'); $newStatus = 'active';
-                $stmtUp = $pdo->prepare('INSERT INTO student_reports (student_id, path, created_at, updated_at, created_by, status) VALUES (:student_id, :path, :created_at, :updated_at, :created_by, :status) ON CONFLICT(student_id) DO UPDATE SET path = :path_up, updated_at = :updated_at_up, created_by = :created_by_up, status = :status_up');
-                $stmtUp->execute([':student_id'=>$studentId,':path'=>$rel,':created_at'=>$nowc,':updated_at'=>$nowc,':created_by'=>$_SESSION['user_id'] ?? null,':status'=>$newStatus,':path_up'=>$rel,':updated_at_up'=>$nowc,':created_by_up'=>$_SESSION['user_id'] ?? null,':status_up'=>$newStatus]);
-                echo json_encode(['success'=>true,'path'=>$rel,'filename'=>basename($pdfFile),'report'=>['student_id'=>$studentId,'path'=>$rel,'status'=>$newStatus]]);
-            } catch (Throwable $e) { http_response_code(500); echo json_encode(['success'=>false,'error'=>'Failed to generate report','message'=>$e->getMessage()]); }
+                // Render template to HTML and return inline
+                ob_start();
+                include __DIR__ . '/../templates/student_report.php';
+                $html = ob_get_clean();
+                echo json_encode(['success'=>true,'html'=>$html,'title'=>($report_title ?: 'Cumulative Record')]);
+            } catch (Throwable $e) {
+                echo json_encode(['success'=>false,'error'=>$e->getMessage()]);
+            }
             break;
         }
 
-        case 'get_student_report': {
-            $studentId = isset($_POST['student_id']) ? (int)$_POST['student_id'] : 0; if (!$studentId) { echo json_encode(['success'=>false,'error'=>'Missing student_id']); break; }
-            try { $pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='student_reports'"); $pi->execute(); if (!$pi->fetchColumn()) { echo json_encode(['success'=>true,'report'=>null]); break; } $stmt = $pdo->prepare('SELECT * FROM student_reports WHERE student_id = :sid LIMIT 1'); $stmt->execute([':sid'=>$studentId]); $row = $stmt->fetch(PDO::FETCH_ASSOC); echo json_encode(['success'=>true,'report'=>$row]); } catch (Throwable $e) { echo json_encode(['success'=>false,'error'=>$e->getMessage()]); }
-            break;
-        }
-
-        case 'create_student_report': {
-            if (session_status() === PHP_SESSION_NONE) session_start(); if (empty($_SESSION['user_id'])) { echo json_encode(['success'=>false,'error'=>'Unauthorized']); break; }
-            $studentId = isset($_POST['student_id']) ? (int)$_POST['student_id'] : 0; if (!$studentId) { echo json_encode(['success'=>false,'error'=>'Missing student_id']); break; }
-            try { $pdo->exec("CREATE TABLE IF NOT EXISTS student_reports (student_id INTEGER PRIMARY KEY, path TEXT, created_at TEXT, updated_at TEXT, created_by INTEGER, status TEXT)"); $now = date('c'); $stmt = $pdo->prepare('INSERT INTO student_reports (student_id, path, created_at, updated_at, created_by, status) VALUES (:student_id, :path, :created_at, :updated_at, :created_by, :status) ON CONFLICT(student_id) DO UPDATE SET updated_at = :updated_at_up, created_by = :created_by_up, status = :status_up'); $stmt->execute([':student_id'=>$studentId,':path'=>null,':created_at'=>$now,':updated_at'=>$now,':created_by'=>$_SESSION['user_id'],':status'=>'active',':updated_at_up'=>$now,':created_by_up'=>$_SESSION['user_id'],':status_up'=>'active']); $q = $pdo->prepare('SELECT * FROM student_reports WHERE student_id = :sid LIMIT 1'); $q->execute([':sid'=>$studentId]); $rrow = $q->fetch(PDO::FETCH_ASSOC); try { record_activity('progress_report_created', $studentId, 'Progress report created'); } catch (Throwable $e) {} echo json_encode(['success'=>true,'report'=>$rrow]); } catch (Throwable $e) { echo json_encode(['success'=>false,'error'=>$e->getMessage()]); }
-            break;
-        }
-
+        // Create a progress report metadata row
         case 'create_progress_report': {
-            if (session_status() === PHP_SESSION_NONE) session_start(); if (empty($_SESSION['user_id'])) { echo json_encode(['success'=>false,'error'=>'Unauthorized']); break; }
-            $studentId = isset($_POST['student_id']) ? (int)$_POST['student_id'] : 0; if (!$studentId) { echo json_encode(['success'=>false,'error'=>'Missing student_id']); break; }
-            $title = trim($_POST['title'] ?? 'Progress Report');
+            // Previously gated by ALLOW_REPORTS; allow creation unconditionally to avoid blocking workflows.
+            // UI can still hide buttons based on ALLOW_REPORTS, but server should accept explicit user actions.
+            if (session_status() === PHP_SESSION_NONE) session_start(); if (empty($_SESSION['user_id'])) { echo json_encode(['success'=>false,'error'=>'Unauthorized','message'=>'Unauthorized']); break; }
+            $studentId = isset($_POST['student_id']) ? (int)$_POST['student_id'] : 0;
+            $title = isset($_POST['title']) ? trim((string)$_POST['title']) : '';
+            if (!$studentId || $title === '') { echo json_encode(['success'=>false,'error'=>'Missing student_id or title']); break; }
+            // Enforce ownership for requested student to prevent cross-user creation
             try {
-                // Ensure table exists (new installs)
-                $pdo->exec("CREATE TABLE IF NOT EXISTS progress_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, title TEXT, created_at TEXT)");
-
-                // If table already existed but lacks an id column, attempt an inline migration safely
-                try {
-                    $ti = $pdo->prepare("PRAGMA table_info('progress_reports')");
-                    $ti->execute();
-                    $cols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name');
-                    if (!in_array('id', $cols)) {
-                        // Best-effort online migration; if it fails due to locks, we'll continue using rowid fallback
-                        try {
-                            $pdo->exec('PRAGMA busy_timeout = 5000');
-                        } catch (Throwable $_e) {}
-                        try {
-                            $pdo->exec('BEGIN IMMEDIATE');
-                            $pdo->exec("CREATE TABLE IF NOT EXISTS progress_reports_new (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, title TEXT, created_at TEXT)");
-                            $pdo->exec("INSERT INTO progress_reports_new (student_id, title, created_at) SELECT student_id, title, created_at FROM progress_reports ORDER BY rowid ASC");
-                            $pdo->exec("DROP TABLE progress_reports");
-                            $pdo->exec("ALTER TABLE progress_reports_new RENAME TO progress_reports");
-                            $pdo->commit();
-                        } catch (Throwable $_m) {
-                            try { $pdo->rollBack(); } catch (Throwable $__e) {}
-                            // Log and continue; rowid fallback will still provide identifiers
-                            try {
-                                $logDir = __DIR__ . '/../dev/logs'; if (!is_dir($logDir)) @mkdir($logDir,0755,true);
-                                @file_put_contents($logDir . '/migration_progress_reports.log', date('c') . ' - inline migration failed: ' . $_m->getMessage() . "\n", FILE_APPEND | LOCK_EX);
-                            } catch (Throwable $__e) {}
-                        }
-                    }
-                } catch (Throwable $_e) { /* schema check failed; continue */ }
+                $tis = $pdo->prepare("PRAGMA table_info('students')"); $tis->execute(); $scols = array_column($tis->fetchAll(PDO::FETCH_ASSOC), 'name');
+            } catch (Throwable $_e) { $scols = []; }
+            if (!empty($scols)) {
+                $cond = '';
+                $params = [':id'=>$studentId, ':uid'=>(int)($_SESSION['user_id'] ?? -1)];
+                if (in_array('user_id',$scols)) { $cond = 'user_id = :uid'; }
+                elseif (in_array('assigned_therapist',$scols)) { $cond = 'assigned_therapist = :uid'; }
+                if ($cond !== '') {
+                    $chk = $pdo->prepare('SELECT COUNT(*) FROM students WHERE id = :id AND ' . $cond);
+                    $chk->execute($params);
+                    if ((int)$chk->fetchColumn() === 0) { echo json_encode(['success'=>false,'error'=>'Forbidden','message'=>'Not your student']); break; }
+                }
+            }
+            try {
+                // Ensure table exists with a sane schema
+                $pdo->exec("CREATE TABLE IF NOT EXISTS progress_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, title TEXT, created_at TEXT, user_id INTEGER)");
                 $now = date('c');
-                $ins = $pdo->prepare('INSERT INTO progress_reports (student_id, title, created_at) VALUES (:sid, :title, :created_at)');
-                $ins->execute([':sid'=>$studentId, ':title'=>$title, ':created_at'=>$now]);
+                // Include user_id when supported
+                try { $ti = $pdo->prepare("PRAGMA table_info('progress_reports')"); $ti->execute(); $pcols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name'); } catch (Throwable $_e) { $pcols = []; }
+                if (in_array('user_id', $pcols)) {
+                    $ins = $pdo->prepare('INSERT INTO progress_reports (student_id, title, created_at, user_id) VALUES (:sid, :title, :created_at, :uid)');
+                    $ins->execute([':sid'=>$studentId, ':title'=>$title, ':created_at'=>$now, ':uid'=>($_SESSION['user_id'] ?? null)]);
+                } else {
+                    $ins = $pdo->prepare('INSERT INTO progress_reports (student_id, title, created_at) VALUES (:sid, :title, :created_at)');
+                    $ins->execute([':sid'=>$studentId, ':title'=>$title, ':created_at'=>$now]);
+                }
                 $id = (int)$pdo->lastInsertId();
-                // fetch using rowid or id column (some DBs used "ID" or omitted id column)
+                // fetch normalized row
                 try {
                     $q = $pdo->prepare('SELECT COALESCE(id, rowid) AS id, rowid AS rowid, student_id, title, created_at FROM progress_reports WHERE rowid = :rid LIMIT 1');
                     $q->execute([':rid' => $id]);
                     $row = $q->fetch(PDO::FETCH_ASSOC);
                 } catch (Throwable $e) {
-                    // fallback to generic select
                     $q = $pdo->prepare('SELECT * FROM progress_reports WHERE id = :id LIMIT 1'); $q->execute([':id'=>$id]); $row = $q->fetch(PDO::FETCH_ASSOC);
                     if ($row) {
                         if (!isset($row['id']) && isset($row['ID'])) $row['id'] = $row['ID'];
@@ -524,14 +343,16 @@ try {
                     }
                 }
                 try { record_activity('progress_report_created', $studentId, 'Progress report created: ' . $title); } catch (Throwable $e) {}
-                // Also create/update a legacy student_reports row so UI code that relies on it
+                // Maintain legacy student_reports status
                 try {
-                    $pdo->exec("CREATE TABLE IF NOT EXISTS student_reports (student_id INTEGER PRIMARY KEY, path TEXT, created_at TEXT, updated_at TEXT, created_by INTEGER, status TEXT)");
+                    $pdo->exec("CREATE TABLE IF NOT EXISTS student_reports (student_id INTEGER PRIMARY KEY, path TEXT, created_at TEXT, updated_at TEXT, created_by INTEGER, status TEXT, user_id INTEGER)");
                     $nowc = date('c');
-                    $stmtUp = $pdo->prepare('INSERT INTO student_reports (student_id, path, created_at, updated_at, created_by, status) VALUES (:student_id, :path, :created_at, :updated_at, :created_by, :status) ON CONFLICT(student_id) DO UPDATE SET path = :path_up, updated_at = :updated_at_up, created_by = :created_by_up, status = :status_up');
-                    $stmtUp->execute([':student_id'=>$studentId,':path'=>null,':created_at'=>$nowc,':updated_at'=>$nowc,':created_by'=>$_SESSION['user_id'] ?? null,':status'=>'active',':path_up'=>null,':updated_at_up'=>$nowc,':created_by_up'=>$_SESSION['user_id'] ?? null,':status_up'=>'active']);
+                    $ti2 = $pdo->prepare("PRAGMA table_info('student_reports')"); $ti2->execute(); $srcols = array_column($ti2->fetchAll(PDO::FETCH_ASSOC), 'name');
+                    $stmtUp = $pdo->prepare('INSERT INTO student_reports (student_id, path, created_at, updated_at, created_by, status' . (in_array('user_id',$srcols)?', user_id':'') . ') VALUES (:student_id, :path, :created_at, :updated_at, :created_by, :status' . (in_array('user_id',$srcols)?', :user_id':'') . ') ON CONFLICT(student_id) DO UPDATE SET path = :path_up, updated_at = :updated_at_up, created_by = :created_by_up, status = :status_up' . (in_array('user_id',$srcols)?', user_id = :user_id_up':'') );
+                    $params = [':student_id'=>$studentId,':path'=>null,':created_at'=>$nowc,':updated_at'=>$nowc,':created_by'=>$_SESSION['user_id'] ?? null,':status'=>'active',':path_up'=>null,':updated_at_up'=>$nowc,':created_by_up'=>$_SESSION['user_id'] ?? null,':status_up'=>'active'];
+                    if (in_array('user_id',$srcols)) { $params[':user_id'] = ($_SESSION['user_id'] ?? null); $params[':user_id_up'] = ($_SESSION['user_id'] ?? null); }
+                    $stmtUp->execute($params);
                 } catch (Throwable $e) { /* ignore legacy table issues */ }
-
                 echo json_encode(['success'=>true,'report'=>$row]);
             } catch (Throwable $e) { echo json_encode(['success'=>false,'error'=>$e->getMessage()]); }
             break;
@@ -542,10 +363,68 @@ try {
             try {
                 $pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='progress_reports'"); $pi->execute();
                 if (!$pi->fetchColumn()) { echo json_encode(['success'=>true,'report'=>null]); break; }
-                // select a normalized id (prefer id column, fall back to rowid)
-                $st = $pdo->prepare('SELECT COALESCE(id, rowid) AS id, rowid AS rowid, student_id, title, created_at FROM progress_reports WHERE student_id = :sid ORDER BY created_at DESC LIMIT 1');
-                $st->execute([':sid'=>$studentId]); $row = $st->fetch(PDO::FETCH_ASSOC);
+                // select a normalized id (prefer id column, fall back to rowid), scoped by user where supported
+                $tpi = $pdo->prepare("PRAGMA table_info('progress_reports')"); $tpi->execute(); $pcols = array_column($tpi->fetchAll(PDO::FETCH_ASSOC), 'name');
+                $sql = 'SELECT COALESCE(id, rowid) AS id, rowid AS rowid, student_id, title, created_at FROM progress_reports WHERE student_id = :sid';
+                $params = [':sid'=>$studentId];
+                if (in_array('user_id', $pcols)) { $sql .= ' AND (user_id = :uid OR user_id IS NULL)'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+                $sql .= ' ORDER BY created_at DESC LIMIT 1';
+                $st = $pdo->prepare($sql);
+                $st->execute($params); $row = $st->fetch(PDO::FETCH_ASSOC);
                 echo json_encode(['success'=>true,'report'=>$row]);
+            } catch (Throwable $e) { echo json_encode(['success'=>false,'error'=>$e->getMessage()]); }
+            break;
+        }
+
+        // Lightweight existence check for a student's report.
+        // Returns { success: true, report: {...} | null, title?: string }
+        // - Prefers progress_reports (new) when present
+        // - Falls back to legacy student_reports row when present
+        case 'get_student_report': {
+            if (session_status() === PHP_SESSION_NONE) session_start(); if (empty($_SESSION['user_id'])) { echo json_encode(['success'=>false,'error'=>'Unauthorized']); break; }
+            $studentId = isset($_POST['student_id']) ? (int)$_POST['student_id'] : 0; if (!$studentId) { echo json_encode(['success'=>false,'error'=>'Missing student_id']); break; }
+            // Enforce ownership to prevent cross-user probing
+            try { $tis = $pdo->prepare("PRAGMA table_info('students')"); $tis->execute(); $scols = array_column($tis->fetchAll(PDO::FETCH_ASSOC), 'name'); } catch (Throwable $_e) { $scols = []; }
+            if (!empty($scols)) {
+                $cond = '';
+                $params = [':id'=>$studentId, ':uid'=>(int)($_SESSION['user_id'] ?? -1)];
+                if (in_array('user_id',$scols)) { $cond = 'user_id = :uid'; }
+                elseif (in_array('assigned_therapist',$scols)) { $cond = 'assigned_therapist = :uid'; }
+                if ($cond !== '') {
+                    $chk = $pdo->prepare('SELECT COUNT(*) FROM students WHERE id = :id AND ' . $cond);
+                    $chk->execute($params);
+                    if ((int)$chk->fetchColumn() === 0) { echo json_encode(['success'=>false,'error'=>'Forbidden']); break; }
+                }
+            }
+            try {
+                // Prefer new progress_reports
+                $pt = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='progress_reports'"); $pt->execute();
+                if ((bool)$pt->fetchColumn()) {
+                    try { $tp = $pdo->prepare("PRAGMA table_info('progress_reports')"); $tp->execute(); $pcols = array_column($tp->fetchAll(PDO::FETCH_ASSOC), 'name'); } catch (Throwable $_e) { $pcols = []; }
+                    $sql = 'SELECT COALESCE(id,rowid) AS id, rowid AS rowid, student_id, title, created_at FROM progress_reports WHERE student_id = :sid';
+                    $params = [':sid'=>$studentId];
+                    if (in_array('user_id',$pcols)) { $sql .= ' AND (user_id = :uid OR user_id IS NULL)'; $params[':uid']=(int)$_SESSION['user_id']; }
+                    $sql .= ' ORDER BY created_at DESC LIMIT 1';
+                    $st = $pdo->prepare($sql); $st->execute($params); $row = $st->fetch(PDO::FETCH_ASSOC);
+                    if ($row) { echo json_encode(['success'=>true,'report'=>$row,'title'=>($row['title'] ?? 'Progress Report')]); break; }
+                }
+                // Fallback to legacy student_reports existence
+                $lt = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='student_reports'"); $lt->execute();
+                if ((bool)$lt->fetchColumn()) {
+                    try { $ti2 = $pdo->prepare("PRAGMA table_info('student_reports')"); $ti2->execute(); $srcols = array_column($ti2->fetchAll(PDO::FETCH_ASSOC), 'name'); } catch (Throwable $_e) { $srcols = []; }
+                    $sql2 = 'SELECT student_id, status, created_at, updated_at FROM student_reports WHERE student_id = :sid';
+                    $params2 = [':sid'=>$studentId];
+                    if (in_array('user_id',$srcols)) { $sql2 .= ' AND (user_id = :uid OR user_id IS NULL)'; $params2[':uid']=(int)$_SESSION['user_id']; }
+                    $sql2 .= ' LIMIT 1';
+                    $sr = $pdo->prepare($sql2); $sr->execute($params2); $legacy = $sr->fetch(PDO::FETCH_ASSOC);
+                    if ($legacy) {
+                        $title = !empty($legacy['status']) ? (ucfirst((string)$legacy['status']) . ' Report') : 'Progress Report';
+                        $report = ['id'=>null,'student_id'=>$studentId,'title'=>$title,'created_at'=>($legacy['created_at'] ?? null)];
+                        echo json_encode(['success'=>true,'report'=>$report,'title'=>$title]);
+                        break;
+                    }
+                }
+                echo json_encode(['success'=>true,'report'=>null]);
             } catch (Throwable $e) { echo json_encode(['success'=>false,'error'=>$e->getMessage()]); }
             break;
         }
@@ -553,7 +432,18 @@ try {
         case 'delete_student_report': {
             if (session_status() === PHP_SESSION_NONE) session_start(); if (empty($_SESSION['user_id'])) { echo json_encode(['success'=>false,'error'=>'Unauthorized','message'=>'Unauthorized']); break; }
             $studentId = isset($_POST['student_id']) ? (int)$_POST['student_id'] : 0; if (!$studentId) { echo json_encode(['success'=>false,'error'=>'Missing student_id','message'=>'Missing student_id']); break; }
-            try { $pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='student_reports'"); $pi->execute(); if (!(bool)$pi->fetchColumn()) { echo json_encode(['success'=>false,'error'=>'No report found']); break; } $stmt = $pdo->prepare('SELECT * FROM student_reports WHERE student_id = :sid LIMIT 1'); $stmt->execute([':sid'=>$studentId]); $row = $stmt->fetch(PDO::FETCH_ASSOC); if ($row && !empty($row['path'])) { $filePath = __DIR__ . '/../' . ltrim($row['path'], '/\\'); if (file_exists($filePath)) @unlink($filePath); } $d = $pdo->prepare('DELETE FROM student_reports WHERE student_id = :sid'); $d->execute([':sid'=>$studentId]); echo json_encode(['success'=>true]); } catch (Throwable $e) { echo json_encode(['success'=>false,'error'=>$e->getMessage()]); }
+            try {
+                $pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='student_reports'"); $pi->execute(); if (!(bool)$pi->fetchColumn()) { echo json_encode(['success'=>false,'error'=>'No report found']); break; }
+                // determine if table has user_id for scoping
+                $ti = $pdo->prepare("PRAGMA table_info('student_reports')"); $ti->execute(); $cols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name');
+                $sql = 'SELECT * FROM student_reports WHERE student_id = :sid'; $params = [':sid'=>$studentId];
+                if (in_array('user_id', $cols)) { $sql .= ' AND (user_id = :uid OR user_id IS NULL)'; $params[':uid'] = (int)$_SESSION['user_id']; }
+                $stmt = $pdo->prepare($sql); $stmt->execute($params); $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                if ($row && !empty($row['path'])) { $filePath = __DIR__ . '/../' . ltrim($row['path'], '/\\'); if (file_exists($filePath)) @unlink($filePath); }
+                $dsql = 'DELETE FROM student_reports WHERE student_id = :sid'; if (in_array('user_id', $cols)) { $dsql .= ' AND (user_id = :uid OR user_id IS NULL)'; }
+                $d = $pdo->prepare($dsql); $d->execute($params);
+                echo json_encode(['success'=>true]);
+            } catch (Throwable $e) { echo json_encode(['success'=>false,'error'=>$e->getMessage()]); }
             break;
         }
 
@@ -568,16 +458,24 @@ try {
                     // Match explicitly by id OR rowid to avoid COALESCE ambiguity when id exists but the client sent a rowid.
                     $sid = null;
                     try {
-                        $s = $pdo->prepare('SELECT student_id FROM progress_reports WHERE id = :id OR rowid = :id LIMIT 1');
-                        $s->execute([':id' => $reportId]);
+                        // check schema for user_id to scope the lookup
+                        $ti = $pdo->prepare("PRAGMA table_info('progress_reports')"); $ti->execute(); $pcols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name');
+                        $sql = 'SELECT student_id FROM progress_reports WHERE id = :id OR rowid = :id';
+                        $params = [':id' => $reportId];
+                        if (in_array('user_id', $pcols)) { $sql .= ' AND (user_id = :uid OR user_id IS NULL)'; $params[':uid'] = (int)$_SESSION['user_id']; }
+                        $s = $pdo->prepare($sql);
+                        $s->execute($params);
                         $sr = $s->fetch(PDO::FETCH_ASSOC);
                         $sid = isset($sr['student_id']) && $sr['student_id'] !== null ? (int)$sr['student_id'] : null;
                     } catch (Throwable $e) {
                         // ignore and proceed; sid may remain null
                     }
 
-                    // Delete the progress_report row using the same id OR rowid match
-                    $d = $pdo->prepare('DELETE FROM progress_reports WHERE id = :id OR rowid = :id'); $d->execute([':id'=>$reportId]);
+                    // Delete the progress_report row using the same id OR rowid match (scoped by user when supported)
+                    try { $ti = $pdo->prepare("PRAGMA table_info('progress_reports')"); $ti->execute(); $pcols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name'); } catch (Throwable $_e) { $pcols = []; }
+                    $dsql = 'DELETE FROM progress_reports WHERE id = :id OR rowid = :id'; $dparams = [':id'=>$reportId];
+                    if (in_array('user_id', $pcols)) { $dsql .= ' AND (user_id = :uid OR user_id IS NULL)'; $dparams[':uid'] = (int)$_SESSION['user_id']; }
+                    $d = $pdo->prepare($dsql); $d->execute($dparams);
 
                     // If we discovered a student id, remove associated skills/updates and any legacy student_reports row
                     if ($sid) {
@@ -609,11 +507,26 @@ try {
                     }
                 } elseif ($studentId) {
                     // delete progress report(s) for this student
-                    $d = $pdo->prepare('DELETE FROM progress_reports WHERE student_id = :sid'); $d->execute([':sid'=>$studentId]);
+                    try { $ti = $pdo->prepare("PRAGMA table_info('progress_reports')"); $ti->execute(); $pcols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name'); } catch (Throwable $_e) { $pcols = []; }
+                    $dsql = 'DELETE FROM progress_reports WHERE student_id = :sid'; $dparams = [':sid'=>$studentId];
+                    if (in_array('user_id', $pcols)) { $dsql .= ' AND (user_id = :uid OR user_id IS NULL)'; $dparams[':uid'] = (int)$_SESSION['user_id']; }
+                    $d = $pdo->prepare($dsql); $d->execute($dparams);
                     // delete any skills and updates for this student
-                    try { $pdo->prepare('DELETE FROM progress_updates WHERE student_id = :sid')->execute([':sid' => $studentId]); } catch (Throwable $e) { /* non-fatal */ }
-                    try { $pdo->prepare('DELETE FROM progress_skills WHERE student_id = :sid')->execute([':sid' => $studentId]); } catch (Throwable $e) { /* non-fatal */ }
-                    try { $pdo->prepare('DELETE FROM student_reports WHERE student_id = :sid')->execute([':sid' => $studentId]); } catch (Throwable $e) { /* non-fatal */ }
+                    try {
+                        $tiu = $pdo->prepare("PRAGMA table_info('progress_updates')"); $tiu->execute(); $ucols = array_column($tiu->fetchAll(PDO::FETCH_ASSOC), 'name');
+                        $usql = 'DELETE FROM progress_updates WHERE student_id = :sid'; $uparams = [':sid'=>$studentId]; if (in_array('user_id',$ucols)) { $usql .= ' AND (user_id = :uid OR user_id IS NULL)'; $uparams[':uid']=(int)$_SESSION['user_id']; }
+                        $pdo->prepare($usql)->execute($uparams);
+                    } catch (Throwable $e) { /* non-fatal */ }
+                    try {
+                        $tis = $pdo->prepare("PRAGMA table_info('progress_skills')"); $tis->execute(); $scols = array_column($tis->fetchAll(PDO::FETCH_ASSOC), 'name');
+                        $ssql = 'DELETE FROM progress_skills WHERE student_id = :sid'; $sparams = [':sid'=>$studentId]; if (in_array('user_id',$scols)) { $ssql .= ' AND (user_id = :uid OR user_id IS NULL)'; $sparams[':uid']=(int)$_SESSION['user_id']; }
+                        $pdo->prepare($ssql)->execute($sparams);
+                    } catch (Throwable $e) { /* non-fatal */ }
+                    try {
+                        $tisr = $pdo->prepare("PRAGMA table_info('student_reports')"); $tisr->execute(); $srcols = array_column($tisr->fetchAll(PDO::FETCH_ASSOC), 'name');
+                        $srsql = 'DELETE FROM student_reports WHERE student_id = :sid'; $srparams = [':sid'=>$studentId]; if (in_array('user_id',$srcols)) { $srsql .= ' AND (user_id = :uid OR user_id IS NULL)'; $srparams[':uid']=(int)$_SESSION['user_id']; }
+                        $pdo->prepare($srsql)->execute($srparams);
+                    } catch (Throwable $e) { /* non-fatal */ }
                 } else {
                     echo json_encode(['success'=>false,'error'=>'Missing report_id or student_id']); break;
                 }
@@ -627,21 +540,82 @@ try {
 
         case 'get_student_skills': {
             $studentId = isset($_POST['student_id']) ? (int)$_POST['student_id'] : 0; if (!$studentId) { echo json_encode(['success'=>false,'error'=>'Missing student_id']); break; }
-            try { $pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='progress_skills'"); $pi->execute(); if (!$pi->fetchColumn()) { echo json_encode(['success'=>true,'skills'=>[]]); break; } $st = $pdo->prepare('SELECT * FROM progress_skills WHERE student_id = :sid ORDER BY id'); $st->execute([':sid'=>$studentId]); $rows = $st->fetchAll(PDO::FETCH_ASSOC); echo json_encode(['success'=>true,'skills'=>$rows]); } catch (Throwable $e) { echo json_encode(['success'=>false,'error'=>$e->getMessage()]); }
+            try {
+                // Enforce ownership for requested student to prevent cross-user access
+                try { $tis = $pdo->prepare("PRAGMA table_info('students')"); $tis->execute(); $scols = array_column($tis->fetchAll(PDO::FETCH_ASSOC), 'name'); } catch (Throwable $_e) { $scols = []; }
+                if (!empty($scols)) {
+                    $cond = '';
+                    $params = [':id'=>$studentId, ':uid'=>(int)($_SESSION['user_id'] ?? -1)];
+                    if (in_array('user_id',$scols)) { $cond = 'user_id = :uid'; }
+                    elseif (in_array('assigned_therapist',$scols)) { $cond = 'assigned_therapist = :uid'; }
+                    if ($cond !== '') {
+                        $chk = $pdo->prepare('SELECT COUNT(*) FROM students WHERE id = :id AND ' . $cond);
+                        $chk->execute($params);
+                        if ((int)$chk->fetchColumn() === 0) { echo json_encode(['success'=>false,'error'=>'Forbidden','message'=>'Not your student']); break; }
+                    }
+                }
+                $pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='progress_skills'");
+                $pi->execute();
+                if (!$pi->fetchColumn()) { echo json_encode(['success'=>true,'skills'=>[]]); break; }
+                $ti = $pdo->prepare("PRAGMA table_info('progress_skills')"); $ti->execute(); $cols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name');
+                $sql = 'SELECT * FROM progress_skills WHERE student_id = :sid';
+                $params = [':sid' => $studentId];
+                if (in_array('user_id', $cols)) { $sql .= ' AND (user_id = :uid OR user_id IS NULL)'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+                $sql .= ' ORDER BY id';
+                $st = $pdo->prepare($sql); $st->execute($params);
+                $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+                echo json_encode(['success'=>true,'skills'=>$rows]);
+            } catch (Throwable $e) { echo json_encode(['success'=>false,'error'=>$e->getMessage()]); }
             break;
         }
 
         case 'get_skill_updates': {
             $skillId = isset($_POST['skill_id']) ? (int)$_POST['skill_id'] : 0; if (!$skillId) { echo json_encode(['success'=>false,'error'=>'Missing skill_id']); break; }
-            try { $pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='progress_updates'"); $pi->execute(); if (!$pi->fetchColumn()) { echo json_encode(['success'=>true,'updates'=>[]]); break; } $st = $pdo->prepare('SELECT * FROM progress_updates WHERE skill_id = :sid ORDER BY created_at'); $st->execute([':sid'=>$skillId]); $rows = $st->fetchAll(PDO::FETCH_ASSOC); echo json_encode(['success'=>true,'updates'=>$rows]); } catch (Throwable $e) { echo json_encode(['success'=>false,'error'=>$e->getMessage()]); }
+            try {
+                // Enforce ownership by checking the owning student via join when possible
+                {
+                    try {
+                        $tiPs = $pdo->prepare("PRAGMA table_info('progress_skills')"); $tiPs->execute(); $psCols = array_column($tiPs->fetchAll(PDO::FETCH_ASSOC), 'name');
+                        $tiStu = $pdo->prepare("PRAGMA table_info('students')"); $tiStu->execute(); $stuCols = array_column($tiStu->fetchAll(PDO::FETCH_ASSOC), 'name');
+                        if (in_array('student_id',$psCols) && !empty($stuCols)) {
+                            $sqlChk = 'SELECT s.id FROM progress_skills ps JOIN students s ON ps.student_id = s.id WHERE ps.id = :sid';
+                            $prm = [':sid'=>$skillId];
+                            if (in_array('user_id',$stuCols)) { $sqlChk .= ' AND s.user_id = :uid'; $prm[':uid']=(int)($_SESSION['user_id'] ?? -1); }
+                            elseif (in_array('assigned_therapist',$stuCols)) { $sqlChk .= ' AND s.assigned_therapist = :uid'; $prm[':uid']=(int)($_SESSION['user_id'] ?? -1); }
+                            $c = $pdo->prepare($sqlChk); $c->execute($prm);
+                            if (!$c->fetch(PDO::FETCH_ASSOC)) { echo json_encode(['success'=>false,'error'=>'Forbidden','message'=>'Not your skill']); break; }
+                        }
+                    } catch (Throwable $_e) {}
+                }
+                $pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='progress_updates'");
+                $pi->execute();
+                if (!$pi->fetchColumn()) { echo json_encode(['success'=>true,'updates'=>[]]); break; }
+                $ti = $pdo->prepare("PRAGMA table_info('progress_updates')"); $ti->execute(); $cols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name');
+                $sql = 'SELECT * FROM progress_updates WHERE skill_id = :sid';
+                $params = [':sid' => $skillId];
+                if (in_array('user_id', $cols)) { $sql .= ' AND (user_id = :uid OR user_id IS NULL)'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+                $sql .= ' ORDER BY created_at';
+                $st = $pdo->prepare($sql); $st->execute($params);
+                $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+                echo json_encode(['success'=>true,'updates'=>$rows]);
+            } catch (Throwable $e) { echo json_encode(['success'=>false,'error'=>$e->getMessage()]); }
             break;
         }
 
         case 'delete_progress_skill': {
             $skillId = isset($_POST['skill_id']) ? (int)$_POST['skill_id'] : 0; if (!$skillId) { echo json_encode(['success'=>false,'error'=>'Missing skill_id']); break; }
             try {
-                try { $pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='progress_updates'"); $pi->execute(); if ($pi->fetchColumn()) { $d = $pdo->prepare('DELETE FROM progress_updates WHERE skill_id = :sid'); $d->execute([':sid'=>$skillId]); } } catch (Throwable $e) {}
-                $pi2 = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='progress_skills'"); $pi2->execute(); if ($pi2->fetchColumn()) { $d2 = $pdo->prepare('DELETE FROM progress_skills WHERE id = :id'); $d2->execute([':id'=>$skillId]); }
+                // scope deletions by user when schema supports it
+                try { $pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='progress_updates'"); $pi->execute(); if ($pi->fetchColumn()) {
+                    $tiu = $pdo->prepare("PRAGMA table_info('progress_updates')"); $tiu->execute(); $ucols = array_column($tiu->fetchAll(PDO::FETCH_ASSOC), 'name');
+                    $sql = 'DELETE FROM progress_updates WHERE skill_id = :sid'; $params = [':sid'=>$skillId]; if (in_array('user_id',$ucols)) { $sql .= ' AND (user_id = :uid OR user_id IS NULL)'; $params[':uid']=(int)($_SESSION['user_id'] ?? -1); }
+                    $d = $pdo->prepare($sql); $d->execute($params);
+                } } catch (Throwable $e) {}
+                $pi2 = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='progress_skills'"); $pi2->execute(); if ($pi2->fetchColumn()) {
+                    $tis = $pdo->prepare("PRAGMA table_info('progress_skills')"); $tis->execute(); $scols = array_column($tis->fetchAll(PDO::FETCH_ASSOC), 'name');
+                    $sql = 'DELETE FROM progress_skills WHERE id = :id'; $params = [':id'=>$skillId]; if (in_array('user_id',$scols)) { $sql .= ' AND (user_id = :uid OR user_id IS NULL)'; $params[':uid']=(int)($_SESSION['user_id'] ?? -1); }
+                    $d2 = $pdo->prepare($sql); $d2->execute($params);
+                }
                 echo json_encode(['success'=>true]);
             } catch (Throwable $e) { echo json_encode(['success'=>false,'error'=>$e->getMessage()]); }
             break;
@@ -655,11 +629,16 @@ try {
             try {
                 $pdo->exec("CREATE TABLE IF NOT EXISTS progress_skills (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, skill_label TEXT, category TEXT, created_at TEXT)");
                 $now = date('c');
-                $ins = $pdo->prepare('INSERT INTO progress_skills (student_id, skill_label, category, created_at) VALUES (:sid, :label, :cat, :created_at)');
-                $ins->execute([':sid'=>$studentId,':label'=>$label,':cat'=>$category,':created_at'=>$now]);
-                $id = (int)$pdo->lastInsertId();
-                $stmt = $pdo->prepare('SELECT * FROM progress_skills WHERE id = :id LIMIT 1'); $stmt->execute([':id'=>$id]); $row = $stmt->fetch(PDO::FETCH_ASSOC);
-                echo json_encode(['success'=>true,'id'=>$id,'skill'=>$row]);
+                // Use safe_insert to include user_id when column exists
+                $newId = (int)$safe_insert('progress_skills', [
+                    'student_id' => $studentId,
+                    'skill_label' => $label,
+                    'category' => $category,
+                    'user_id' => $_SESSION['user_id'] ?? null,
+                    'created_at' => $now,
+                ]);
+                $stmt = $pdo->prepare('SELECT * FROM progress_skills WHERE id = :id LIMIT 1'); $stmt->execute([':id'=>$newId]); $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                echo json_encode(['success'=>true,'id'=>$newId,'skill'=>$row]);
             } catch (Throwable $e) { echo json_encode(['success'=>false,'error'=>$e->getMessage()]); }
             break;
         }
@@ -674,8 +653,17 @@ try {
             try {
                 $pdo->exec("CREATE TABLE IF NOT EXISTS progress_updates (id INTEGER PRIMARY KEY AUTOINCREMENT, skill_id INTEGER, student_id INTEGER, score INTEGER, target_score INTEGER, notes TEXT, created_at TEXT)");
                 $now = date('c');
-                $ins = $pdo->prepare('INSERT INTO progress_updates (skill_id, student_id, score, target_score, notes, created_at) VALUES (:skill_id, :student_id, :score, :target_score, :notes, :created_at)');
-                $ins->execute([':skill_id'=>$skillId,':student_id'=>$studentId,':score'=>$score,':target_score'=>$target,':notes'=>$notes,':created_at'=>$now]);
+                // Include user_id if supported by schema
+                $ti = $pdo->prepare("PRAGMA table_info('progress_updates')"); $ti->execute(); $cols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name');
+                // Optional ownership check: ensure the skill belongs to the current user when possible
+                try { $tsi = $pdo->prepare("PRAGMA table_info('progress_skills')"); $tsi->execute(); $scols = array_column($tsi->fetchAll(PDO::FETCH_ASSOC), 'name'); if (in_array('user_id',$scols) && !empty($_SESSION['user_id'])) { $chk = $pdo->prepare('SELECT COUNT(*) FROM progress_skills WHERE id = :sid AND (user_id = :uid OR user_id IS NULL)'); $chk->execute([':sid'=>$skillId, ':uid'=>(int)$_SESSION['user_id']]); if ((int)$chk->fetchColumn() === 0) { echo json_encode(['success'=>false,'error'=>'Forbidden','message'=>'Not your skill']); break; } } } catch (Throwable $_e) {}
+                if (in_array('user_id', $cols)) {
+                    $ins = $pdo->prepare('INSERT INTO progress_updates (skill_id, student_id, score, target_score, notes, created_at, user_id) VALUES (:skill_id, :student_id, :score, :target_score, :notes, :created_at, :user_id)');
+                    $ins->execute([':skill_id'=>$skillId,':student_id'=>$studentId,':score'=>$score,':target_score'=>$target,':notes'=>$notes,':created_at'=>$now, ':user_id'=>($_SESSION['user_id'] ?? null)]);
+                } else {
+                    $ins = $pdo->prepare('INSERT INTO progress_updates (skill_id, student_id, score, target_score, notes, created_at) VALUES (:skill_id, :student_id, :score, :target_score, :notes, :created_at)');
+                    $ins->execute([':skill_id'=>$skillId,':student_id'=>$studentId,':score'=>$score,':target_score'=>$target,':notes'=>$notes,':created_at'=>$now]);
+                }
                 $id = (int)$pdo->lastInsertId();
                 $stmt = $pdo->prepare('SELECT * FROM progress_updates WHERE id = :id LIMIT 1'); $stmt->execute([':id'=>$id]); $row = $stmt->fetch(PDO::FETCH_ASSOC);
                 echo json_encode(['success'=>true,'id'=>$id,'update'=>$row]);
@@ -687,15 +675,47 @@ try {
             $studentId = isset($_POST['student_id']) ? (int)$_POST['student_id'] : 0;
             if (!$studentId) { header('Content-Type: text/plain; charset=utf-8'); echo 'Student ID required'; break; }
             try {
-                $stmt = $pdo->prepare('SELECT * FROM students WHERE id = :id LIMIT 1'); $stmt->execute([':id'=>$studentId]); $student = $stmt->fetch(PDO::FETCH_ASSOC);
+                // scope by user when supported
+                try { $ti = $pdo->prepare("PRAGMA table_info('students')"); $ti->execute(); $scols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name'); } catch (Throwable $_e) { $scols = []; }
+                if (in_array('user_id', $scols)) {
+                    $stmt = $pdo->prepare('SELECT * FROM students WHERE id = :id AND (user_id = :uid OR user_id IS NULL) LIMIT 1');
+                    $stmt->execute([':id'=>$studentId, ':uid'=>($_SESSION['user_id'] ?? -1)]);
+                } else {
+                    $stmt = $pdo->prepare('SELECT * FROM students WHERE id = :id LIMIT 1');
+                    $stmt->execute([':id'=>$studentId]);
+                }
+                $student = $stmt->fetch(PDO::FETCH_ASSOC);
                 if (!$student) { header('Content-Type: text/plain; charset=utf-8'); echo 'Student not found'; break; }
 
                 $skills = [];
-                try { $ps = $pdo->prepare('SELECT * FROM progress_skills WHERE student_id = :sid ORDER BY id'); $ps->execute([':sid'=>$studentId]); $skills = $ps->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) {}
+                try {
+                    $ti = $pdo->prepare("PRAGMA table_info('progress_skills')"); $ti->execute(); $pcols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name');
+                    $sql = 'SELECT * FROM progress_skills WHERE student_id = :sid'; $params = [':sid'=>$studentId];
+                    if (in_array('user_id', $pcols)) { $sql .= ' AND (user_id = :uid OR user_id IS NULL)'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+                    $sql .= ' ORDER BY id';
+                    $ps = $pdo->prepare($sql); $ps->execute($params); $skills = $ps->fetchAll(PDO::FETCH_ASSOC);
+                } catch (Throwable $e) {}
                 $student_goals = [];
-                try { $gq = $pdo->prepare('SELECT * FROM goals WHERE student_id = :sid ORDER BY created_at DESC'); $gq->execute([':sid'=>$studentId]); $student_goals = $gq->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) {}
+                try {
+                    $ti = $pdo->prepare("PRAGMA table_info('goals')"); $ti->execute(); $gcols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name');
+                    $sql = 'SELECT * FROM goals WHERE student_id = :sid'; $params = [':sid'=>$studentId];
+                    if (in_array('user_id', $gcols)) { $sql .= ' AND (user_id = :uid OR user_id IS NULL)'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+                    $sql .= ' ORDER BY created_at DESC';
+                    $gq = $pdo->prepare($sql); $gq->execute($params); $student_goals = $gq->fetchAll(PDO::FETCH_ASSOC);
+                } catch (Throwable $e) {}
                 $skill_updates = [];
-                try { if (!empty($skills)) { foreach (array_column($skills,'id') as $sid) { $pu = $pdo->prepare('SELECT * FROM progress_updates WHERE skill_id = :sid ORDER BY created_at'); $pu->execute([':sid'=>$sid]); $skill_updates[$sid] = $pu->fetchAll(PDO::FETCH_ASSOC); } } } catch (Throwable $e) {}
+                try {
+                    if (!empty($skills)) {
+                        foreach (array_column($skills,'id') as $sid) {
+                            $ti = $pdo->prepare("PRAGMA table_info('progress_updates')"); $ti->execute(); $ucols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name');
+                            $sql = 'SELECT * FROM progress_updates WHERE skill_id = :sid'; $params = [':sid'=>$sid];
+                            if (in_array('user_id', $ucols)) { $sql .= ' AND (user_id = :uid OR user_id IS NULL)'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+                            $sql .= ' ORDER BY created_at';
+                            $pu = $pdo->prepare($sql); $pu->execute($params);
+                            $skill_updates[$sid] = $pu->fetchAll(PDO::FETCH_ASSOC);
+                        }
+                    }
+                } catch (Throwable $e) {}
 
                 header('Content-Type: text/html; charset=utf-8');
                 ob_start();
@@ -711,17 +731,36 @@ try {
         case 'delete_student': {
             $idToDelete = isset($_POST['id']) ? (int)$_POST['id'] : 0;
             if (!$idToDelete) { echo json_encode(['success'=>false,'error'=>'Missing student id','message'=>'Missing student id']); break; }
+            if (empty($_SESSION['user_id'])) { echo json_encode(['success'=>false,'error'=>'Unauthorized','message'=>'Unauthorized']); break; }
+            $uid = (int)$_SESSION['user_id'];
             // capture student name for activity logging before deletion
             $studentName = null;
             try {
-                $s = $pdo->prepare('SELECT first_name, last_name FROM students WHERE id = :id LIMIT 1');
+                $s = $pdo->prepare('SELECT first_name, last_name, user_id FROM students WHERE id = :id LIMIT 1');
                 $s->execute([':id' => $idToDelete]);
                 $sr = $s->fetch(PDO::FETCH_ASSOC);
-                if ($sr) $studentName = trim(($sr['first_name'] ?? '') . ' ' . ($sr['last_name'] ?? '')) ?: null;
+                if ($sr) {
+                    $studentName = trim(($sr['first_name'] ?? '') . ' ' . ($sr['last_name'] ?? '')) ?: null;
+                    // ownership check when students.user_id exists
+                    if (array_key_exists('user_id', $sr) && $sr['user_id'] !== null && (int)$sr['user_id'] !== $uid) {
+                        echo json_encode(['success'=>false,'error'=>'Forbidden','message'=>'Not your student']);
+                        break;
+                    }
+                }
             } catch (Throwable $e) { /* ignore */ }
 
-            $stmt = $pdo->prepare('DELETE FROM students WHERE id = :id');
-            $stmt->execute([':id'=>$idToDelete]);
+            // Guard the delete with user filter when column exists
+            try {
+                $ti = $pdo->query("PRAGMA table_info('students')");
+                $cols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name');
+            } catch (Throwable $_) { $cols = []; }
+            if (in_array('user_id', $cols)) {
+                $stmt = $pdo->prepare('DELETE FROM students WHERE id = :id AND (user_id = :uid OR user_id IS NULL)');
+                $stmt->execute([':id'=>$idToDelete, ':uid'=>$uid]);
+            } else {
+                $stmt = $pdo->prepare('DELETE FROM students WHERE id = :id');
+                $stmt->execute([':id'=>$idToDelete]);
+            }
             try { record_activity('student_deleted', $idToDelete, 'Student deleted', ['student_id' => $idToDelete, 'student_name' => $studentName]); } catch (Throwable $e) {}
             echo json_encode(['success'=>true]);
             break;
@@ -731,13 +770,21 @@ try {
         case 'delete_student_permanent': {
             $idToDelete = isset($_POST['id']) ? (int)$_POST['id'] : 0;
             if (!$idToDelete) { echo json_encode(['success'=>false,'error'=>'Missing student id','message'=>'Missing student id']); break; }
+            if (empty($_SESSION['user_id'])) { echo json_encode(['success'=>false,'error'=>'Unauthorized','message'=>'Unauthorized']); break; }
+            $uid = (int)$_SESSION['user_id'];
             // capture student name for activity logging before deletion
             $studentName = null;
             try {
-                $s = $pdo->prepare('SELECT first_name, last_name FROM students WHERE id = :id LIMIT 1');
+                $s = $pdo->prepare('SELECT first_name, last_name, user_id FROM students WHERE id = :id LIMIT 1');
                 $s->execute([':id' => $idToDelete]);
                 $sr = $s->fetch(PDO::FETCH_ASSOC);
-                if ($sr) $studentName = trim(($sr['first_name'] ?? '') . ' ' . ($sr['last_name'] ?? '')) ?: null;
+                if ($sr) {
+                    $studentName = trim(($sr['first_name'] ?? '') . ' ' . ($sr['last_name'] ?? '')) ?: null;
+                    if (array_key_exists('user_id', $sr) && $sr['user_id'] !== null && (int)$sr['user_id'] !== $uid) {
+                        echo json_encode(['success'=>false,'error'=>'Forbidden','message'=>'Not your student']);
+                        break;
+                    }
+                }
             } catch (Throwable $e) { /* ignore */ }
 
             try {
@@ -770,9 +817,15 @@ try {
                 try { $pdo->prepare('DELETE FROM progress_updates WHERE student_id = :id')->execute([':id'=>$idToDelete]); } catch (Throwable $e) {}
                 try { $pdo->prepare('DELETE FROM progress_skills WHERE student_id = :id')->execute([':id'=>$idToDelete]); } catch (Throwable $e) {}
 
-                // Finally delete the student row
-                $stmt = $pdo->prepare('DELETE FROM students WHERE id = :id');
-                $stmt->execute([':id'=>$idToDelete]);
+                // Finally delete the student row (guard with user filter when present)
+                try { $ti = $pdo->query("PRAGMA table_info('students')"); $cols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name'); } catch (Throwable $_e) { $cols = []; }
+                if (in_array('user_id', $cols)) {
+                    $stmt = $pdo->prepare('DELETE FROM students WHERE id = :id AND (user_id = :uid OR user_id IS NULL)');
+                    $stmt->execute([':id'=>$idToDelete, ':uid'=>$uid]);
+                } else {
+                    $stmt = $pdo->prepare('DELETE FROM students WHERE id = :id');
+                    $stmt->execute([':id'=>$idToDelete]);
+                }
                 try { record_activity('student_deleted_permanent', $idToDelete, 'Student file permanently deleted', ['student_id' => $idToDelete, 'student_name' => $studentName]); } catch (Throwable $e) {}
                 echo json_encode(['success'=>true]);
             } catch (Throwable $e) {
@@ -785,9 +838,17 @@ try {
         case 'archive_student': {
             $idToArchive = isset($_POST['id']) ? (int)$_POST['id'] : 0;
             if (!$idToArchive) { echo json_encode(['success'=>false,'error'=>'Missing student id','message'=>'Missing student id']); break; }
-            $stmt = $pdo->prepare('UPDATE students SET archived = 1 WHERE id = :id');
-            $stmt->execute([':id'=>$idToArchive]);
-            echo json_encode(['success'=>true]);
+            if (empty($_SESSION['user_id'])) { echo json_encode(['success'=>false,'error'=>'Unauthorized','message'=>'Unauthorized']); break; }
+            $uid = (int)$_SESSION['user_id'];
+            try { $ti = $pdo->query("PRAGMA table_info('students')"); $cols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name'); } catch (Throwable $_e) { $cols = []; }
+            if (in_array('user_id', $cols)) {
+                $stmt = $pdo->prepare('UPDATE students SET archived = 1 WHERE id = :id AND (user_id = :uid OR user_id IS NULL)');
+                $stmt->execute([':id'=>$idToArchive, ':uid'=>$uid]);
+            } else {
+                $stmt = $pdo->prepare('UPDATE students SET archived = 1 WHERE id = :id');
+                $stmt->execute([':id'=>$idToArchive]);
+            }
+            echo json_encode(['success'=>true, 'updated'=>$stmt->rowCount()]);
             break;
         }
 
@@ -890,6 +951,7 @@ try {
                     'therapist_id' => $userId,
                     'metadata' => json_encode(['form_type'=>$formType]),
                     'content' => $contentJson,
+                    'user_id' => $_SESSION['user_id'] ?? null,
                     'Evaluation_Date' => $eval_date,
                     'Reason_Referral' => $reason_referral,
                     'Background_Info' => $background_info,
@@ -903,17 +965,7 @@ try {
                 $pi->execute();
                 $existingCols = array_column($pi->fetchAll(PDO::FETCH_ASSOC), 'name');
 
-                // Ensure content column exists when possible (best-effort)
-                if (!in_array('content', $existingCols)) {
-                    try {
-                        $pdo->exec("ALTER TABLE initial_evaluations ADD COLUMN content TEXT");
-                        $pi = $pdo->prepare("PRAGMA table_info('initial_evaluations')");
-                        $pi->execute();
-                        $existingCols = array_column($pi->fetchAll(PDO::FETCH_ASSOC), 'name');
-                    } catch (\Throwable $e) {
-                        // ignore failures to alter
-                    }
-                }
+                // No longer creating or relying on a 'content' column; structured fields and metadata suffice
 
                 // Determine which candidate columns actually exist in this DB schema
                 $cols = array_values(array_intersect(array_keys($candidates), $existingCols));
@@ -937,18 +989,7 @@ try {
                         try { record_activity('document_created', $studentId, 'Initial evaluation created', ['form_type' => $formType, 'db_id' => (int)$pdo->lastInsertId()]); } catch (Throwable $e) {}
                     }
 
-                    // If content exists in schema but wasn't part of the inserted columns, ensure it's stored via UPDATE
-                    if (in_array('content', $existingCols) && !in_array('content', $cols)) {
-                        try {
-                            $lastId = (int)$pdo->lastInsertId();
-                            if ($lastId) {
-                                $u = $pdo->prepare('UPDATE initial_evaluations SET content = :content WHERE id = :id');
-                                $u->execute([':content' => $contentJson, ':id' => $lastId]);
-                            }
-                        } catch (\Throwable $e) {
-                            // non-fatal
-                        }
-                    }
+                    // Do not attempt to persist full JSON into a content column
                 } else {
                     // Fallback: schema doesn't have compatible columns; store in other_documents
                         $insertData = [
@@ -957,6 +998,7 @@ try {
                             'therapist_id' => $userId,
                             'metadata' => json_encode(['fallback_from' => 'initial_evaluations']),
                             'content' => $contentJson,
+                            'user_id' => $_SESSION['user_id'] ?? null,
                             'created_at' => date('c')
                         ];
                         if (!empty($formType)) $insertData['form_type'] = $formType;
@@ -1038,6 +1080,7 @@ try {
                     // Build dynamic INSERT including only existing columns
                     $cols = ['student_id','title','Long_Term_Goals','Short_Term_Goals','Intervention_Strategies','Measurement_Criteria','status','created_at'];
                     if (in_array('therapist_id', $gcols)) $cols[] = 'therapist_id';
+                    if (in_array('user_id', $gcols)) $cols[] = 'user_id';
                     $use = array_values(array_intersect($cols, $gcols));
                     // values map
                     $valuesMap = [
@@ -1050,6 +1093,7 @@ try {
                         'status' => $status,
                         'created_at' => date('c'),
                         'therapist_id' => $userId,
+                        'user_id' => $_SESSION['user_id'] ?? null,
                     ];
                     $place = array_map(function($c){ return ':' . $c; }, $use);
                     $sql = 'INSERT INTO goals (' . implode(', ', $use) . ') VALUES (' . implode(', ', $place) . ')';
@@ -1076,6 +1120,7 @@ try {
                     'therapist_id' => $userId,
                     'metadata' => json_encode(['form_type'=>$formType]),
                     'content' => $contentJson,
+                    'user_id' => $_SESSION['user_id'] ?? null,
                     // potential textarea columns present in some schemas
                     'objectives_targeted' => $formData['objectivesTargeted'] ?? $formData['objectives_targeted'] ?? null,
                     'activities_used' => $formData['activitiesUsed'] ?? $formData['activities_used'] ?? null,
@@ -1088,19 +1133,7 @@ try {
                 $pi = $pdo->prepare("PRAGMA table_info('session_reports')");
                 $pi->execute();
                 $existingCols = array_column($pi->fetchAll(PDO::FETCH_ASSOC), 'name');
-
-                // If the schema doesn't have a content column, add it so we can persist the full JSON payload
-                if (!in_array('content', $existingCols)) {
-                    try {
-                        $pdo->exec("ALTER TABLE session_reports ADD COLUMN content TEXT");
-                        // refresh schema list
-                        $pi = $pdo->prepare("PRAGMA table_info('session_reports')");
-                        $pi->execute();
-                        $existingCols = array_column($pi->fetchAll(PDO::FETCH_ASSOC), 'name');
-                    } catch (\Throwable $e) {
-                        // If alter fails (permissions or read-only), continue without content — we'll fallback later
-                    }
-                }
+                // No longer adding or using a 'content' column; use explicit columns/metadata only
 
                 // Determine which candidate columns exist
                 $cols = array_values(array_intersect(array_keys($candidates), $existingCols));
@@ -1115,18 +1148,7 @@ try {
                     }
                     $stmt->execute($params);
                     try { record_activity('document_created', $studentId, 'Session report created', ['form_type' => $formType, 'db_id' => (int)$pdo->lastInsertId()]); } catch (Throwable $e) {}
-                    // Ensure content stored: if the schema supports content but it wasn't part of the INSERT, update it now
-                    if (in_array('content', $existingCols) && !in_array('content', $cols)) {
-                        try {
-                            $lastId = (int)$pdo->lastInsertId();
-                            if ($lastId) {
-                                $u = $pdo->prepare('UPDATE session_reports SET content = :content WHERE id = :id');
-                                $u->execute([':content' => $contentJson, ':id' => $lastId]);
-                            }
-                        } catch (\Throwable $e) {
-                            // non-fatal
-                        }
-                    }
+                    // Do not attempt to persist full JSON into a content column
                     // Also ensure textarea columns are persisted: build an UPDATE setting any of the textarea columns if present in schema
                     try {
                         $lastId = (int)$pdo->lastInsertId();
@@ -1157,6 +1179,7 @@ try {
                         'therapist_id' => $userId,
                         'metadata' => json_encode(['fallback_from' => 'session_report']),
                         'content' => $contentJson,
+                        'user_id' => $_SESSION['user_id'] ?? null,
                         'created_at' => date('c')
                     ];
                     if (!empty($formType)) $insertData['form_type'] = $formType;
@@ -1201,6 +1224,7 @@ try {
                     'therapist_id' => $userId,
                     'metadata' => json_encode(['form_type'=>$formType]),
                     'content' => $contentJson,
+                    'user_id' => $_SESSION['user_id'] ?? null,
                     'created_at' => date('c')
                 ];
 
@@ -1239,17 +1263,7 @@ try {
                 $pi->execute();
                 $existingCols = array_column($pi->fetchAll(PDO::FETCH_ASSOC), 'name');
 
-                // Best-effort: add content column if missing (non-fatal)
-                if (!in_array('content', $existingCols)) {
-                    try {
-                        $pdo->exec("ALTER TABLE discharge_reports ADD COLUMN content TEXT");
-                        $pi = $pdo->prepare("PRAGMA table_info('discharge_reports')");
-                        $pi->execute();
-                        $existingCols = array_column($pi->fetchAll(PDO::FETCH_ASSOC), 'name');
-                    } catch (\Throwable $e) {
-                        // ignore failures to alter
-                    }
-                }
+                // No longer adding or using a 'content' column; use explicit columns/metadata only
 
                 $cols = array_values(array_intersect(array_keys($candidates), $existingCols));
 
@@ -1266,9 +1280,7 @@ try {
                         $stmt->execute($params);
                             try { record_activity('document_created', $studentId, 'Discharge report created', ['form_type' => $formType, 'db_id' => (int)$pdo->lastInsertId()]); } catch (Throwable $e) {}
                     } else {
-                        // fallback: update content only
-                        $stmt = $pdo->prepare('UPDATE discharge_reports SET content = :content WHERE id = :id');
-                        $stmt->execute([':content' => $contentJson, ':id' => $dbId]);
+                        // no content column fallback; rely on explicit columns only
                     }
                 } else {
                     if (!empty($cols)) {
@@ -1279,18 +1291,7 @@ try {
                         foreach ($cols as $c) $params[':' . $c] = $candidates[$c];
                         $stmt->execute($params);
 
-                        // Ensure content stored if schema supports it but content wasn't included in INSERT
-                        if (in_array('content', $existingCols) && !in_array('content', $cols)) {
-                            try {
-                                $lastId = (int)$pdo->lastInsertId();
-                                if ($lastId) {
-                                    $u = $pdo->prepare('UPDATE discharge_reports SET content = :content WHERE id = :id');
-                                    $u->execute([':content' => $contentJson, ':id' => $lastId]);
-                                }
-                            } catch (\Throwable $e) {
-                                // non-fatal
-                            }
-                        }
+                        // Do not attempt to persist full JSON into a content column
 
                         // Targeted UPDATE for large text columns (if present)
                         try {
@@ -1322,6 +1323,7 @@ try {
                             'therapist_id' => $userId,
                             'metadata' => json_encode(['fallback_from' => 'discharge_report']),
                             'content' => $contentJson,
+                            'user_id' => $_SESSION['user_id'] ?? null,
                             'created_at' => date('c')
                         ];
                         if (!empty($formType)) $insertData['form_type'] = $formType;
@@ -1350,6 +1352,7 @@ try {
                     'therapist_id' => $userId,
                     'metadata' => json_encode(['form_type'=>$formType]),
                     'content' => $contentJson,
+                    'user_id' => $_SESSION['user_id'] ?? null,
                     'created_at' => date('c'),
                 ];
                 if (!empty($formType)) $insertData['form_type'] = $formType;
@@ -1389,14 +1392,17 @@ try {
             $existing = array_column($pi->fetchAll(PDO::FETCH_ASSOC),'name');
             $want = array_values(array_intersect($cols,$existing));
             if (empty($want)) $want = ['*'];
-            $sql = 'SELECT ' . implode(',', $want) . ' FROM initial_evaluations WHERE student_id = :sid ORDER BY created_at DESC';
+            $sql = 'SELECT ' . implode(',', $want) . ' FROM initial_evaluations WHERE student_id = :sid';
+            $params = [':sid' => $studentId];
+            if (in_array('user_id', $existing)) { $sql .= ' AND (user_id = :uid OR user_id IS NULL)'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+            $sql .= ' ORDER BY created_at DESC';
             $stmt = $pdo->prepare($sql);
-            $stmt->execute([':sid'=>$studentId]);
+            $stmt->execute($params);
             foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
                 // prefer stored JSON content when available
                 if (isset($r['content']) && !empty($r['content'])) {
                     $json = json_decode($r['content'], true);
-                    if ($json) { $json['db_id'] = $r['id']; $forms[] = $json; continue; }
+                    if ($json) { $json['db_id'] = $r['id']; $json['table'] = 'initial_evaluations'; $forms[] = $json; continue; }
                 }
 
                 // Build a form_data payload from explicit columns when content JSON isn't present
@@ -1422,7 +1428,7 @@ try {
                 // created_at fallback
                 $form_data['created_at'] = $r['created_at'] ?? null;
 
-                $forms[] = ['db_id'=>$r['id'],'id'=>$r['id'],'title'=>$r['title'] ?? ('Initial Evaluation'), 'created_at'=>$r['created_at'] ?? null,'form_type'=>'initial_evaluation','form_data'=>$form_data];
+                $forms[] = ['db_id'=>$r['id'],'id'=>$r['id'],'title'=>$r['title'] ?? ('Initial Evaluation'), 'created_at'=>$r['created_at'] ?? null,'form_type'=>'initial_evaluation','table'=>'initial_evaluations','form_data'=>$form_data];
             }
             // goals (normalize into forms list so client can view/edit)
             $cols = ['id','student_id','title','description','status','created_at','Long_Term_Goals','Short_Term_Goals','Intervention_Strategies','Measurement_Criteria'];
@@ -1431,9 +1437,12 @@ try {
             $existing = array_column($pi->fetchAll(PDO::FETCH_ASSOC),'name');
             $want = array_values(array_intersect($cols,$existing));
             if (empty($want)) $want = ['*'];
-            $sql = 'SELECT ' . implode(',', $want) . ' FROM goals WHERE student_id = :sid ORDER BY created_at DESC';
+            $sql = 'SELECT ' . implode(',', $want) . ' FROM goals WHERE student_id = :sid';
+            $params = [':sid' => $studentId];
+            if (in_array('user_id', $existing)) { $sql .= ' AND (user_id = :uid OR user_id IS NULL)'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+            $sql .= ' ORDER BY created_at DESC';
             $stmt = $pdo->prepare($sql);
-            $stmt->execute([':sid'=>$studentId]);
+            $stmt->execute($params);
             foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
                 $form_data = [];
                 // Prefer explicit columns if they exist
@@ -1467,22 +1476,61 @@ try {
                 $form_data['studentName'] = $r['student_id'];
                 // Also include created_at inside form_data similar to content JSON returned for other forms
                 $form_data['created_at'] = $r['created_at'];
-                $forms[] = ['db_id'=>$r['id'],'id'=>$r['id'],'student_id'=>$r['student_id'],'title'=>$r['title'],'created_at'=>$r['created_at'],'form_type'=>'goals_form','form_data'=>$form_data,'status'=>$r['status'] ?? 'active'];
+                $forms[] = ['db_id'=>$r['id'],'id'=>$r['id'],'student_id'=>$r['student_id'],'title'=>$r['title'],'created_at'=>$r['created_at'],'form_type'=>'goals_form','table'=>'goals','form_data'=>$form_data,'status'=>$r['status'] ?? 'active'];
             }
             // session reports
-            $cols = ['id','title','therapist_id','metadata','content','created_at'];
+            $cols = [
+                'id','student_id','title','therapist_id','metadata','content','created_at',
+                // possible textarea columns
+                'objectives_targeted','activities_used','student_response','next_session_plan',
+                // capitalization variants seen in some DBs
+                'Objectives_Targeted','Activities_Used','Student_Response','Next_Session_Plan',
+                // sometimes camelCase
+                'objectivesTargeted','activitiesUsed','studentResponse','nextSessionPlan',
+                // other core fields that might exist
+                'session_date','duration_minutes','session_type','sessionDate','durationMinutes','sessionType'
+            ];
             $pi = $pdo->prepare("PRAGMA table_info('session_reports')");
             $pi->execute();
             $existing = array_column($pi->fetchAll(PDO::FETCH_ASSOC),'name');
             $want = array_values(array_intersect($cols,$existing));
             if (empty($want)) $want = ['*'];
-            $sql = 'SELECT ' . implode(',', $want) . ' FROM session_reports WHERE student_id = :sid ORDER BY created_at DESC';
+            $sql = 'SELECT ' . implode(',', $want) . ' FROM session_reports WHERE student_id = :sid';
+            $params = [':sid' => $studentId];
+            if (in_array('user_id', $existing)) { $sql .= ' AND (user_id = :uid OR user_id IS NULL)'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+            $sql .= ' ORDER BY created_at DESC';
             $stmt = $pdo->prepare($sql);
-            $stmt->execute([':sid'=>$studentId]);
+            $stmt->execute($params);
             foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
                 if (!empty($r['content'])) {
                     $json = json_decode($r['content'], true);
-                    if ($json) { $json['db_id'] = $r['id']; $forms[] = $json; continue; }
+                    if ($json) {
+                        $json['db_id'] = $r['id'];
+                        $json['table'] = 'session_reports';
+                        // Normalize nested form_data keys to template IDs so the client can populate reliably
+                        if (isset($json['form_data']) && is_array($json['form_data'])) {
+                            $fd = $json['form_data'];
+                            $pick = function(array $keys, array $src) {
+                                foreach ($keys as $k) { if (array_key_exists($k, $src) && $src[$k] !== null && $src[$k] !== '') return $src[$k]; }
+                                return null;
+                            };
+                            $sd = $pick(['sessionDate','session_date','date'], $fd);
+                            if ($sd !== null) $json['form_data']['sessionDate'] = $sd;
+                            $dur = $pick(['sessionDuration','duration_minutes','durationMinutes'], $fd);
+                            if ($dur !== null) $json['form_data']['sessionDuration'] = $dur;
+                            $stype = $pick(['sessionType','session_type'], $fd);
+                            if ($stype !== null) $json['form_data']['sessionType'] = $stype;
+                            $obj = $pick(['objectivesTargeted','objectives_targeted','Objectives_Targeted'], $fd);
+                            if ($obj !== null) $json['form_data']['objectivesTargeted'] = $obj;
+                            $act = $pick(['activitiesUsed','activities_used','Activities_Used'], $fd);
+                            if ($act !== null) $json['form_data']['activitiesUsed'] = $act;
+                            $resp = $pick(['studentResponse','student_response','Student_Response'], $fd);
+                            if ($resp !== null) $json['form_data']['studentResponse'] = $resp;
+                            $next = $pick(['nextSessionPlan','next_session_plan','Next_Session_Plan'], $fd);
+                            if ($next !== null) $json['form_data']['nextSessionPlan'] = $next;
+                        }
+                        $forms[] = $json; continue;
+                    }
                 }
 
                 // Build a fallback form_data from explicit columns when content JSON isn't present
@@ -1510,50 +1558,87 @@ try {
                 // created_at fallback
                 $form_data['created_at'] = $r['created_at'] ?? null;
 
-                $forms[] = ['db_id'=>$r['id'],'id'=>$r['id'],'title'=>$r['title'] ?? 'Session Report', 'created_at'=>$r['created_at'] ?? null,'form_type'=>'session_report','form_data'=>$form_data];
+                $forms[] = ['db_id'=>$r['id'],'id'=>$r['id'],'title'=>$r['title'] ?? 'Session Report', 'created_at'=>$r['created_at'] ?? null,'form_type'=>'session_report','table'=>'session_reports','form_data'=>$form_data];
             }
             // discharge reports
-            $cols = ['id','title','therapist_id','metadata','content','created_at'];
+            $cols = [
+                'id','student_id','title','therapist_id','metadata','content','created_at',
+                // common text columns and variants
+                'Summary_of_Services_Provided','Summary_of_services','summary_of_services','services_summary',
+                'Goals_Achieved','Goals_achieved','goals_achieved',
+                'Reason_for_Discharge','Reason_for_discharge','reason_for_discharge',
+                'Follow_up_Recommendations','FollowUp_Recommendations','follow_up_recommendations','FollowUp_Recommentaions',
+                'discharge_date'
+            ];
             $pi = $pdo->prepare("PRAGMA table_info('discharge_reports')");
             $pi->execute();
             $existing = array_column($pi->fetchAll(PDO::FETCH_ASSOC),'name');
             $want = array_values(array_intersect($cols,$existing));
             if (empty($want)) $want = ['*'];
-            $sql = 'SELECT ' . implode(',', $want) . ' FROM discharge_reports WHERE student_id = :sid ORDER BY created_at DESC';
+            $sql = 'SELECT ' . implode(',', $want) . ' FROM discharge_reports WHERE student_id = :sid';
+            $params = [':sid' => $studentId];
+            if (in_array('user_id', $existing)) { $sql .= ' AND (user_id = :uid OR user_id IS NULL)'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+            $sql .= ' ORDER BY created_at DESC';
             $stmt = $pdo->prepare($sql);
-            $stmt->execute([':sid'=>$studentId]);
+            $stmt->execute($params);
             foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
                 if (!empty($r['content'])) {
                     $json = json_decode($r['content'], true);
-                    if ($json) { $json['db_id'] = $r['id']; $forms[] = $json; continue; }
+                    if ($json) {
+                        $json['db_id'] = $r['id'];
+                        $json['table'] = 'discharge_reports';
+                        // Normalize nested form_data keys to match template input IDs
+                        if (isset($json['form_data']) && is_array($json['form_data'])) {
+                            $fd = $json['form_data'];
+                            // helper to pick first available value from keys
+                            $pick = function(array $keys, array $src) {
+                                foreach ($keys as $k) { if (array_key_exists($k, $src) && $src[$k] !== null && $src[$k] !== '') return $src[$k]; }
+                                return null;
+                            };
+                            $svc = $pick(['servicesSummary','summaryOfServices','Summary_of_Services_Provided','Summary_of_services','summary_of_services','services_summary'], $fd);
+                            if ($svc !== null) $json['form_data']['servicesSummary'] = $svc;
+                            $ga = $pick(['goalsAchieved','Goals_Achieved','Goals_achieved','goals_achieved'], $fd);
+                            if ($ga !== null) $json['form_data']['goalsAchieved'] = $ga;
+                            $rsn = $pick(['dischargeReason','reasonForDischarge','Reason_for_Discharge','Reason_for_discharge','reason_for_discharge'], $fd);
+                            if ($rsn !== null) $json['form_data']['dischargeReason'] = $rsn;
+                            $fu = $pick(['followUpRecommendations','Follow_up_Recommendations','FollowUp_Recommendations','follow_up_recommendations','FollowUp_Recommentaions'], $fd);
+                            if ($fu !== null) $json['form_data']['followUpRecommendations'] = $fu;
+                            $dd = $pick(['dischargeDate','discharge_date','created_at'], $fd);
+                            if ($dd !== null) $json['form_data']['dischargeDate'] = $dd;
+                        }
+                        $forms[] = $json; continue;
+                    }
                 }
 
                 // Build form_data from explicit discharge_report columns when content is not present
                 $form_data = [];
                 if (isset($r['student_id'])) $form_data['studentName'] = $r['student_id'];
-                // Summary of services - several possible column names
-                if (isset($r['Summary_of_Services_Provided'])) $form_data['summaryOfServices'] = $r['Summary_of_Services_Provided'];
-                elseif (isset($r['Summary_of_services'])) $form_data['summaryOfServices'] = $r['Summary_of_services'];
-                elseif (isset($r['summary_of_services'])) $form_data['summaryOfServices'] = $r['summary_of_services'] ?? null;
+                // Summary of services - map to servicesSummary to match template input id
+                if (isset($r['Summary_of_Services_Provided'])) $form_data['servicesSummary'] = $r['Summary_of_Services_Provided'];
+                elseif (isset($r['Summary_of_services'])) $form_data['servicesSummary'] = $r['Summary_of_services'];
+                elseif (isset($r['summary_of_services'])) $form_data['servicesSummary'] = $r['summary_of_services'] ?? null;
 
                 // Goals achieved
                 if (isset($r['Goals_Achieved'])) $form_data['goalsAchieved'] = $r['Goals_Achieved'];
                 elseif (isset($r['Goals_achieved'])) $form_data['goalsAchieved'] = $r['Goals_achieved'];
                 elseif (isset($r['goals_achieved'])) $form_data['goalsAchieved'] = $r['goals_achieved'] ?? null;
 
-                // Reason for discharge
-                if (isset($r['Reason_for_Discharge'])) $form_data['reasonForDischarge'] = $r['Reason_for_Discharge'];
-                elseif (isset($r['Reason_for_discharge'])) $form_data['reasonForDischarge'] = $r['Reason_for_discharge'];
-                elseif (isset($r['reason_for_discharge'])) $form_data['reasonForDischarge'] = $r['reason_for_discharge'] ?? null;
+                // Reason for discharge - map to dischargeReason to match template
+                if (isset($r['Reason_for_Discharge'])) $form_data['dischargeReason'] = $r['Reason_for_Discharge'];
+                elseif (isset($r['Reason_for_discharge'])) $form_data['dischargeReason'] = $r['Reason_for_discharge'];
+                elseif (isset($r['reason_for_discharge'])) $form_data['dischargeReason'] = $r['reason_for_discharge'] ?? null;
 
-                // Follow-up recommendations
+                // Follow-up recommendations (including typo variant observed in some DBs)
                 if (isset($r['Follow_up_Recommendations'])) $form_data['followUpRecommendations'] = $r['Follow_up_Recommendations'];
                 elseif (isset($r['FollowUp_Recommendations'])) $form_data['followUpRecommendations'] = $r['FollowUp_Recommendations'];
                 elseif (isset($r['follow_up_recommendations'])) $form_data['followUpRecommendations'] = $r['follow_up_recommendations'] ?? null;
+                elseif (isset($r['FollowUp_Recommentaions'])) $form_data['followUpRecommendations'] = $r['FollowUp_Recommentaions'];
 
+                // Discharge date mapping when available
+                if (isset($r['discharge_date'])) $form_data['dischargeDate'] = $r['discharge_date'];
                 $form_data['created_at'] = $r['created_at'] ?? null;
 
-                $forms[] = ['db_id'=>$r['id'],'id'=>$r['id'],'title'=>$r['title'] ?? 'Discharge Report','created_at'=>$r['created_at'] ?? null,'form_type'=>'discharge_report','form_data'=>$form_data];
+                $forms[] = ['db_id'=>$r['id'],'id'=>$r['id'],'title'=>$r['title'] ?? 'Discharge Report','created_at'=>$r['created_at'] ?? null,'form_type'=>'discharge_report','table'=>'discharge_reports','form_data'=>$form_data];
             }
             // fallback: other_documents table for any other types
             // include file_path so clients can show download links
@@ -1563,15 +1648,18 @@ try {
             $existing = array_column($pi->fetchAll(PDO::FETCH_ASSOC),'name');
             $want = array_values(array_intersect($cols,$existing));
             if (empty($want)) $want = ['*'];
-            $sql = 'SELECT ' . implode(',', $want) . ' FROM other_documents WHERE student_id = :sid ORDER BY created_at DESC';
+            $sql = 'SELECT ' . implode(',', $want) . ' FROM other_documents WHERE student_id = :sid';
+            $params = [':sid' => $studentId];
+            if (in_array('user_id', $existing)) { $sql .= ' AND (user_id = :uid OR user_id IS NULL)'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+            $sql .= ' ORDER BY created_at DESC';
             $stmt = $pdo->prepare($sql);
-            $stmt->execute([':sid'=>$studentId]);
+            $stmt->execute($params);
             foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
                 if (!empty($r['content'])) {
                     $json = json_decode($r['content'], true);
                     if ($json) { $json['db_id'] = $r['id']; $forms[] = $json; continue; }
                 }
-                $forms[] = ['id'=>$r['id'],'title'=>$r['title'],'created_at'=>$r['created_at'],'form_type'=>$r['form_type'] ?? null, 'file_path' => $r['file_path'] ?? null];
+                $forms[] = ['id'=>$r['id'],'title'=>$r['title'],'created_at'=>$r['created_at'],'form_type'=>$r['form_type'] ?? null, 'file_path' => $r['file_path'] ?? null, 'table' => 'other_documents'];
             }
             // Normalize into buckets by form type and order groups as: initial, goals, sessions, other, discharge.
             $order = ['initial_evaluation','goals_form','session_report','other_documents','discharge_report'];
@@ -1644,7 +1732,13 @@ try {
                             $pi = $pdo->prepare("PRAGMA table_info('{$t}')"); $pi->execute();
                             $existing = array_column($pi->fetchAll(PDO::FETCH_ASSOC),'name');
                             if (!in_array('content',$existing)) continue;
-                            $sql = 'SELECT id, content, file_path, therapist_id, student_id FROM ' . $t . ' WHERE content IS NOT NULL AND content != ""';
+                            // Build a schema-aware select list to include ownership columns where available
+                            $selectCols = ['id','content'];
+                            if (in_array('file_path',$existing)) $selectCols[] = 'file_path';
+                            if (in_array('therapist_id',$existing)) $selectCols[] = 'therapist_id';
+                            if (in_array('student_id',$existing)) $selectCols[] = 'student_id';
+                            if (in_array('user_id',$existing)) $selectCols[] = 'user_id';
+                            $sql = 'SELECT ' . implode(',', $selectCols) . ' FROM ' . $t . ' WHERE content IS NOT NULL AND content != ""';
                             $stmt = $pdo->prepare($sql);
                             $stmt->execute();
                             foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
@@ -1676,11 +1770,13 @@ try {
                         $pi->execute();
                         $existing = array_column($pi->fetchAll(PDO::FETCH_ASSOC),'name');
 
-                        // Build a safe select list: always include id; include content/file_path if present
+                        // Build a safe select list: always include id; include content/file_path and student_id if present
                         $selectCols = ['id'];
                         if (in_array('content',$existing)) $selectCols[] = 'content';
                         if (in_array('file_path',$existing)) $selectCols[] = 'file_path';
                         if (in_array('therapist_id',$existing)) $selectCols[] = 'therapist_id';
+                        if (in_array('student_id',$existing)) $selectCols[] = 'student_id';
+                        if (in_array('user_id',$existing)) $selectCols[] = 'user_id';
 
                         $sql = 'SELECT ' . implode(',', $selectCols) . ' FROM ' . $t;
                         if (in_array('content',$existing)) {
@@ -1704,11 +1800,16 @@ try {
 
                 if (!$found) throw new Exception('Document not found');
 
-                // Permission: allow if current user is the therapist_id (uploader), the student's assigned_therapist, or session has is_admin
+                // Permission: allow if current user is the therapist_id (uploader) or owns the student
                 $currentUser = $_SESSION['user_id'] ?? null;
                 $ownerId = isset($foundRow['therapist_id']) ? (int)$foundRow['therapist_id'] : null;
                 $allowed = false;
                 if ($currentUser && $ownerId && $ownerId === (int)$currentUser) $allowed = true;
+
+                // Secondary path: if row-level user_id is present and matches, allow
+                if (!$allowed && isset($foundRow['user_id']) && $currentUser && (int)$foundRow['user_id'] === (int)$currentUser) {
+                    $allowed = true;
+                }
 
                 // If still not allowed, check the student assigned_therapist
                 if (!$allowed) {
@@ -1720,11 +1821,18 @@ try {
                         // attempt to parse content JSON for student_id
                         if (!empty($foundRow['content'])) {
                             $tmp = json_decode($foundRow['content'], true);
-                            if ($tmp && isset($tmp['student_id'])) $studentIdForRow = (int)$tmp['student_id'];
+                            if ($tmp) {
+                                if (isset($tmp['student_id'])) {
+                                    $studentIdForRow = (int)$tmp['student_id'];
+                                } elseif (isset($tmp['form_data']) && is_array($tmp['form_data']) && isset($tmp['form_data']['studentName']) && is_numeric($tmp['form_data']['studentName'])) {
+                                    // Legacy content shape: student id nested under form_data.studentName
+                                    $studentIdForRow = (int)$tmp['form_data']['studentName'];
+                                }
+                            }
                         }
                     }
                     if ($studentIdForRow) {
-                        // Only query students.assigned_therapist if that column exists in this DB schema
+                        // Query students schema once and check ownership columns in preferred order
                         try {
                             $pi3 = $pdo->prepare("PRAGMA table_info('students')");
                             $pi3->execute();
@@ -1732,7 +1840,17 @@ try {
                         } catch (Throwable $e) {
                             $studentCols = [];
                         }
-                        if (in_array('assigned_therapist', $studentCols)) {
+                        // Prefer strict ownership via students.user_id when available
+                        if (!$allowed && in_array('user_id', $studentCols)) {
+                            $stmt = $pdo->prepare('SELECT user_id FROM students WHERE id = :id LIMIT 1');
+                            $stmt->execute([':id' => $studentIdForRow]);
+                            $stu = $stmt->fetch(PDO::FETCH_ASSOC);
+                            if ($stu && isset($stu['user_id']) && $currentUser && (int)$stu['user_id'] === (int)$currentUser) {
+                                $allowed = true;
+                            }
+                        }
+                        // Fallback: assigned_therapist ownership for legacy schemas
+                        if (!$allowed && in_array('assigned_therapist', $studentCols)) {
                             $stmt = $pdo->prepare('SELECT assigned_therapist FROM students WHERE id = :id LIMIT 1');
                             $stmt->execute([':id' => $studentIdForRow]);
                             $stu = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -1741,62 +1859,38 @@ try {
                             }
                         }
                     }
-                }
 
-                if (!$allowed) {
-                    // Build debug info to help admins diagnose permission failures
-                    $debug = [
-                        'currentUser' => $currentUser,
-                        'ownerId' => $ownerId,
-                        'foundTable' => $foundTable,
-                        'foundDbRowId' => $foundDbRowId,
-                        'studentIdForRow' => $studentIdForRow ?? null
-                    ];
-                    // attempt to include assigned_therapist value if present
-                    try {
-                        $pi_debug = $pdo->prepare("PRAGMA table_info('students')");
-                        $pi_debug->execute();
-                        $studentColsDbg = array_column($pi_debug->fetchAll(PDO::FETCH_ASSOC),'name');
-                    } catch (Throwable $e) { $studentColsDbg = []; }
-                    if (in_array('assigned_therapist', $studentColsDbg) && !empty($studentIdForRow)) {
-                        try {
-                            $sstmt = $pdo->prepare('SELECT assigned_therapist FROM students WHERE id = :id LIMIT 1');
-                            $sstmt->execute([':id' => $studentIdForRow]);
-                            $srow = $sstmt->fetch(PDO::FETCH_ASSOC);
-                            $debug['student_assigned_therapist'] = $srow['assigned_therapist'] ?? null;
-                        } catch (Throwable $e) { /* ignore */ }
-                    }
-                    // detect if current user is admin so we can return debug to them
-                    $isAdmin = false;
-                    try {
-                        $ust = $pdo->prepare('SELECT role FROM users WHERE id = :id LIMIT 1');
-                        $ust->execute([':id' => $currentUser]);
-                        $ur = $ust->fetch(PDO::FETCH_ASSOC);
-                        if ($ur && ($ur['role'] ?? '') === 'admin') $isAdmin = true;
-                    } catch (Throwable $e) { $isAdmin = false; }
-
-                    if ($isAdmin) {
-                        // Admin override: allow deletion but record debug info so audits show the reason
-                        $allowed = true;
-                        try {
-                            $logDir = __DIR__ . '/../dev/logs';
-                            if (!is_dir($logDir)) @mkdir($logDir, 0755, true);
-                            $entry = [
-                                'time' => date('c'),
-                                'action' => 'delete_document',
-                                'provided' => $provided,
-                                'found_table' => $foundTable,
-                                'found_db_id' => $foundDbRowId,
-                                'user_id' => $currentUser,
-                                'result' => 'admin_override',
-                                'debug' => $debug
-                            ];
-                            @file_put_contents($logDir . '/delete_attempts.log', json_encode($entry) . "\n", FILE_APPEND | LOCK_EX);
-                        } catch (Throwable $e) { /* ignore logging failures */ }
-                    } else {
-                        throw new Exception('Permission denied');
+                    // Last-resort safe fallback: if the row lacks a student_id and the client provided a student context
+                    // that belongs to the current user, allow the delete. This covers legacy rows with missing linkage.
+                    if (!$allowed) {
+                        $clientStudent = isset($_POST['student_id']) ? (int)$_POST['student_id'] : null;
+                        if ($clientStudent) {
+                            try {
+                                $pi3 = $pdo->prepare("PRAGMA table_info('students')");
+                                $pi3->execute();
+                                $studentCols = array_column($pi3->fetchAll(PDO::FETCH_ASSOC), 'name');
+                            } catch (Throwable $e) { $studentCols = []; }
+                            $ownsClientStudent = false;
+                            if (in_array('user_id', $studentCols)) {
+                                $stc = $pdo->prepare('SELECT COUNT(*) FROM students WHERE id = :id AND user_id = :uid');
+                                $stc->execute([':id' => $clientStudent, ':uid' => (int)$currentUser]);
+                                $ownsClientStudent = ((int)$stc->fetchColumn() > 0);
+                            } elseif (in_array('assigned_therapist', $studentCols)) {
+                                $stc = $pdo->prepare('SELECT COUNT(*) FROM students WHERE id = :id AND assigned_therapist = :uid');
+                                $stc->execute([':id' => $clientStudent, ':uid' => (int)$currentUser]);
+                                $ownsClientStudent = ((int)$stc->fetchColumn() > 0);
+                            }
+                            // Only allow this fallback when the found row carries no student_id linkage
+                            if ($ownsClientStudent && (!isset($foundRow['student_id']) || empty($foundRow['student_id']))) {
+                                $allowed = true;
+                                // adopt the client-provided context for downstream logging
+                                $studentIdForRow = $clientStudent;
+                            }
+                        }
                     }
                 }
+
+                if (!$allowed) { throw new Exception('Permission denied'); }
 
                 // Safety: verify the found row's student_id matches the student's selected id if client provided a student context
                 $clientStudent = isset($_POST['student_id']) ? (int)$_POST['student_id'] : null;
@@ -1872,8 +1966,17 @@ try {
         case 'get_student': {
             $studentId = isset($_POST['id']) ? (int)$_POST['id'] : 0;
             if (!$studentId) { echo json_encode(['success'=>false,'error'=>'Student ID required','message'=>'Student ID required']); break; }
-            $stmt = $pdo->prepare('SELECT * FROM students WHERE id = :id');
-            $stmt->execute([':id'=>$studentId]);
+            // Scope by user when user_id column exists, honoring OWNERSHIP_STRICT
+            try { $ti = $pdo->query("PRAGMA table_info('students')"); $cols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name'); } catch (Throwable $_e) { $cols = []; }
+            if (in_array('user_id', $cols)) {
+                $strict = defined('OWNERSHIP_STRICT') && OWNERSHIP_STRICT;
+                $cond = $strict ? 'user_id = :uid' : '(user_id = :uid OR user_id IS NULL)';
+                $stmt = $pdo->prepare('SELECT * FROM students WHERE id = :id AND ' . $cond);
+                $stmt->execute([':id'=>$studentId, ':uid'=>($_SESSION['user_id'] ?? -1)]);
+            } else {
+                $stmt = $pdo->prepare('SELECT * FROM students WHERE id = :id');
+                $stmt->execute([':id'=>$studentId]);
+            }
             $student = $stmt->fetch(PDO::FETCH_ASSOC);
             if (!$student) { echo json_encode(['success'=>false,'error'=>'Student not found','message'=>'Student not found']); break; }
             echo json_encode(['success'=>true,'student'=>$student]);
@@ -1882,47 +1985,24 @@ try {
 
         // (Old naive update_student block removed -- replaced by a schema-aware update_student case later)
 
-        // Export student HTML -> build using DB data and documents files
-        case 'export_student_html': {
-            $idToExport = isset($_POST['id']) ? (int)$_POST['id'] : 0;
-            if (!$idToExport) { echo json_encode(['success'=>false,'error'=>'Missing id','message'=>'Missing id']); break; }
-
-            $stmt = $pdo->prepare('SELECT * FROM students WHERE id = :id');
-            $stmt->execute([':id'=>$idToExport]);
-            $student = $stmt->fetch(PDO::FETCH_ASSOC);
-            if (!$student) { echo json_encode(['success'=>false,'error'=>'Student not found','message'=>'Student not found']); break; }
-
-            // aggregate per-form tables and documents fallback
-            $student_docs = [];
-            $tables = ['initial_evaluations','session_reports','discharge_reports','other_documents'];
-            foreach ($tables as $t) {
-                $stmt = $pdo->prepare("SELECT * FROM {$t} WHERE student_id = :sid ORDER BY created_at DESC");
-                $stmt->execute([':sid'=>$idToExport]);
-                foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $d) {
-                    if (!empty($d['content'])) { $formData = json_decode($d['content'], true); if ($formData) { $student_docs[] = $formData; continue; } }
-                    $student_docs[] = ['id'=>$d['id'],'title'=>$d['title'] ?? ($d['form_type'] ?? 'Document'),'created_at'=>$d['created_at']];
-                }
-            }
-
-            // goals and progress for this student
-            $stmt = $pdo->prepare('SELECT * FROM goals WHERE student_id = :sid');
-            $stmt->execute([':sid'=>$idToExport]);
-            $student_goals = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-            $stmt = $pdo->prepare('SELECT * FROM progress_updates WHERE student_id = :sid ORDER BY created_at DESC');
-            $stmt->execute([':sid'=>$idToExport]);
-            $student_progress = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-            ob_start();
-            include __DIR__ . '/../templates/export.php';
-            $html = ob_get_clean();
-            echo json_encode(['success'=>true,'html'=>$html]);
-            break;
-        }
+        
 
         // Get archived students
         case 'get_archived_students': {
-            $stmt = $pdo->query('SELECT * FROM students WHERE archived = 1 ORDER BY last_name, first_name');
+            try {
+                $ti = $pdo->query("PRAGMA table_info('students')");
+                $cols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name');
+                if (in_array('user_id', $cols)) {
+                    $strict = defined('OWNERSHIP_STRICT') && OWNERSHIP_STRICT;
+                    $cond = $strict ? 'user_id = :uid' : '(user_id = :uid OR user_id IS NULL)';
+                    $stmt = $pdo->prepare('SELECT * FROM students WHERE archived = 1 AND ' . $cond . ' ORDER BY last_name, first_name');
+                    $stmt->execute([':uid'=>($_SESSION['user_id'] ?? -1)]);
+                } else {
+                    $stmt = $pdo->query('SELECT * FROM students WHERE archived = 1 ORDER BY last_name, first_name');
+                }
+            } catch (Throwable $_e) {
+                $stmt = $pdo->query('SELECT * FROM students WHERE archived = 1 ORDER BY last_name, first_name');
+            }
             $archived = $stmt->fetchAll(PDO::FETCH_ASSOC);
             echo json_encode(['success'=>true,'students'=>$archived]);
             break;
@@ -1932,15 +2012,36 @@ try {
         case 'restore_student': {
             $studentId = isset($_POST['id']) ? (int)$_POST['id'] : 0;
             if (!$studentId) { echo json_encode(['success'=>false,'error'=>'Student ID required']); break; }
-            $stmt = $pdo->prepare('UPDATE students SET archived = 0 WHERE id = :id');
-            $stmt->execute([':id'=>$studentId]);
-            echo json_encode(['success'=>true]);
+            if (empty($_SESSION['user_id'])) { echo json_encode(['success'=>false,'error'=>'Unauthorized','message'=>'Unauthorized']); break; }
+            $uid = (int)$_SESSION['user_id'];
+            try { $ti = $pdo->query("PRAGMA table_info('students')"); $cols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name'); } catch (Throwable $_e) { $cols = []; }
+            if (in_array('user_id', $cols)) {
+                $stmt = $pdo->prepare('UPDATE students SET archived = 0 WHERE id = :id AND (user_id = :uid OR user_id IS NULL)');
+                $stmt->execute([':id'=>$studentId, ':uid'=>$uid]);
+            } else {
+                $stmt = $pdo->prepare('UPDATE students SET archived = 0 WHERE id = :id');
+                $stmt->execute([':id'=>$studentId]);
+            }
+            echo json_encode(['success'=>true, 'updated'=>$stmt->rowCount()]);
             break;
         }
 
         // Export all students as HTML
         case 'export_all_students': {
-            $stmt = $pdo->query('SELECT * FROM students WHERE archived = 0 ORDER BY last_name, first_name');
+            try {
+                $ti = $pdo->query("PRAGMA table_info('students')");
+                $cols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name');
+                if (in_array('user_id', $cols)) {
+                    $strict = defined('OWNERSHIP_STRICT') && OWNERSHIP_STRICT;
+                    $cond = $strict ? 'user_id = :uid' : '(user_id = :uid OR user_id IS NULL)';
+                    $stmt = $pdo->prepare('SELECT * FROM students WHERE archived = 0 AND ' . $cond . ' ORDER BY last_name, first_name');
+                    $stmt->execute([':uid'=>($_SESSION['user_id'] ?? -1)]);
+                } else {
+                    $stmt = $pdo->query('SELECT * FROM students WHERE archived = 0 ORDER BY last_name, first_name');
+                }
+            } catch (Throwable $_e) {
+                $stmt = $pdo->query('SELECT * FROM students WHERE archived = 0 ORDER BY last_name, first_name');
+            }
             $activeStudents = $stmt->fetchAll(PDO::FETCH_ASSOC);
             ob_start();
             ?>
@@ -2028,6 +2129,90 @@ try {
             break;
         }
 
+        // Update current user's profile (first_name, last_name)
+        case 'update_profile': {
+            if (empty($_SESSION['user_id'])) { echo json_encode(['success'=>false,'error'=>'Unauthorized','message'=>'Unauthorized']); break; }
+            $uid = (int)$_SESSION['user_id'];
+            $first = trim($_POST['first_name'] ?? '');
+            $last  = trim($_POST['last_name'] ?? '');
+            if ($first === '' || $last === '') { echo json_encode(['success'=>false,'error'=>'First and last name are required']); break; }
+
+            // Only update columns that exist
+            try { $pi = $pdo->prepare("PRAGMA table_info('users')"); $pi->execute(); $cols = array_column($pi->fetchAll(PDO::FETCH_ASSOC), 'name'); } catch (Throwable $_e) { $cols = []; }
+            $sets = [];
+            $params = [':id' => $uid];
+            if (in_array('first_name', $cols)) { $sets[] = 'first_name = :fn'; $params[':fn'] = $first; }
+            if (in_array('last_name', $cols))  { $sets[] = 'last_name = :ln';  $params[':ln'] = $last; }
+            if (empty($sets)) { echo json_encode(['success'=>false,'error'=>'Profile fields not supported by schema']); break; }
+            $sql = 'UPDATE users SET ' . implode(', ', $sets) . ' WHERE id = :id';
+            $st = $pdo->prepare($sql); $st->execute($params);
+            try { record_activity('profile_updated', null, 'User profile updated', ['user_id'=>$uid]); } catch (Throwable $e) {}
+            echo json_encode(['success'=>true, 'updated'=>$st->rowCount()]);
+            break;
+        }
+
+        // Change current user's password (verify current, then set password_hash)
+        case 'change_password': {
+            if (empty($_SESSION['user_id'])) { echo json_encode(['success'=>false,'error'=>'Unauthorized','message'=>'Unauthorized']); break; }
+            $uid = (int)$_SESSION['user_id'];
+            $current = (string)($_POST['current_password'] ?? '');
+            $new     = (string)($_POST['new_password'] ?? '');
+            if ($current === '' || $new === '') { echo json_encode(['success'=>false,'error'=>'Current and new password required']); break; }
+            // Optional minimal policy
+            if (strlen($new) < 6) { echo json_encode(['success'=>false,'error'=>'New password must be at least 6 characters']); break; }
+
+            // Load current credentials
+            try {
+                $pi = $pdo->prepare("PRAGMA table_info('users')"); $pi->execute(); $cols = array_column($pi->fetchAll(PDO::FETCH_ASSOC), 'name');
+            } catch (Throwable $_e) { $cols = []; }
+            $hasHash = in_array('password_hash', $cols);
+            $hasPlain = in_array('password', $cols);
+            // Build SELECT list only with existing columns
+            $selectFields = [];
+            if ($hasHash) $selectFields[] = 'password_hash';
+            if ($hasPlain) $selectFields[] = 'password';
+            if (empty($selectFields)) { echo json_encode(['success'=>false,'error'=>'Password fields not present in schema']); break; }
+            $stmt = $pdo->prepare('SELECT ' . implode(', ', $selectFields) . ' FROM users WHERE id = :id LIMIT 1');
+            $stmt->execute([':id'=>$uid]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$row) { echo json_encode(['success'=>false,'error'=>'User not found']); break; }
+
+            // Verify current password against password_hash when present; fall back to legacy password field (plaintext)
+            $ok = false;
+            if ($hasHash && !empty($row['password_hash'])) {
+                if (!function_exists('verifyPassword')) { require_once __DIR__ . '/auth.php'; }
+                $ok = verifyPassword($current, (string)$row['password_hash']);
+            } elseif ($hasPlain && array_key_exists('password', $row)) {
+                // legacy fallback: compare plaintext when only password column exists
+                $ok = ($row['password'] !== null) && ((string)$row['password'] === $current);
+            }
+            if (!$ok) { echo json_encode(['success'=>false,'error'=>'Current password is incorrect']); break; }
+
+            // Hash the new password and update password_hash; optionally clear legacy password column
+            if (!function_exists('hashPassword')) { require_once __DIR__ . '/auth.php'; }
+            $hash = hashPassword($new);
+            $sets = [];
+            $params = [':id'=>$uid];
+            if ($hasHash) {
+                $sets[] = 'password_hash = :ph';
+                $params[':ph'] = $hash;
+                // Best-effort: clear legacy plaintext password when both columns exist
+                if ($hasPlain) { $sets[] = 'password = NULL'; }
+            } elseif ($hasPlain) {
+                // If schema lacks password_hash but has legacy password column, store hash in that column
+                $sets[] = 'password = :ph';
+                $params[':ph'] = $hash;
+            } else {
+                echo json_encode(['success'=>false,'error'=>'No writable password field in schema']);
+                break;
+            }
+            $sql = 'UPDATE users SET ' . implode(', ', $sets) . ' WHERE id = :id';
+            $up = $pdo->prepare($sql); $up->execute($params);
+            try { record_activity('password_changed', null, 'User password changed', ['user_id'=>$uid]); } catch (Throwable $e) {}
+            echo json_encode(['success'=>true]);
+            break;
+        }
+
         // Get all (or filtered) students
         case 'get_students': {
             // optional: allow filtering via POST (assigned_therapist, archived)
@@ -2060,6 +2245,16 @@ try {
                 $conds[] = 'archived = :archived';
                 $params[':archived'] = $archived;
             }
+            // Scope by user if column exists
+            try {
+                $ti = $pdo->query("PRAGMA table_info('students')");
+                $cols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name');
+                if (in_array('user_id', $cols)) {
+                    $strict = defined('OWNERSHIP_STRICT') && OWNERSHIP_STRICT;
+                    $conds[] = $strict ? 'user_id = :uid' : '(user_id = :uid OR user_id IS NULL)';
+                    $params[':uid'] = ($_SESSION['user_id'] ?? -1);
+                }
+            } catch (Throwable $_e) { /* ignore */ }
             if ($conds) $sql .= ' WHERE ' . implode(' AND ', $conds);
 
             $sql .= ' ORDER BY last_name, first_name';
@@ -2075,11 +2270,37 @@ try {
         case 'get_goals': {
             $sid = isset($_POST['student_id']) ? (int)$_POST['student_id'] : 0;
             if ($sid) {
-                $stmt = $pdo->prepare('SELECT * FROM goals WHERE student_id = :sid ORDER BY created_at DESC');
-                $stmt->execute([':sid'=>$sid]);
+                // Enforce ownership on requested student when possible
+                try {
+                    $tiS = $pdo->prepare("PRAGMA table_info('students')"); $tiS->execute(); $scolsChk = array_column($tiS->fetchAll(PDO::FETCH_ASSOC), 'name');
+                    if (!empty($scolsChk)) {
+                        $cond = '';
+                        $p = [':id'=>$sid, ':uid'=>(int)($_SESSION['user_id'] ?? -1)];
+                        if (in_array('user_id',$scolsChk)) { $cond = 'user_id = :uid'; }
+                        elseif (in_array('assigned_therapist',$scolsChk)) { $cond = 'assigned_therapist = :uid'; }
+                        if ($cond !== '') {
+                            $cs = $pdo->prepare('SELECT COUNT(*) FROM students WHERE id = :id AND ' . $cond);
+                            $cs->execute($p);
+                            if ((int)$cs->fetchColumn() === 0) { echo json_encode(['success'=>false,'error'=>'Forbidden','message'=>'Not your student']); break; }
+                        }
+                    }
+                } catch (Throwable $_e) {}
+                try { $ti = $pdo->prepare("PRAGMA table_info('goals')"); $ti->execute(); $cols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name'); } catch (Throwable $_e) { $cols = []; }
+                $sql = 'SELECT * FROM goals WHERE student_id = :sid'; $params = [':sid'=>$sid];
+                if (in_array('user_id', $cols)) { $sql .= ' AND (user_id = :uid OR user_id IS NULL)'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+                $sql .= ' ORDER BY created_at DESC';
+                $stmt = $pdo->prepare($sql); $stmt->execute($params);
                 echo json_encode(['success'=>true,'goals'=>$stmt->fetchAll(PDO::FETCH_ASSOC)]);
             } else {
-                $stmt = $pdo->query('SELECT * FROM goals ORDER BY created_at DESC');
+                try { $ti = $pdo->prepare("PRAGMA table_info('goals')"); $ti->execute(); $cols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name'); } catch (Throwable $_e) { $cols = []; }
+                if (in_array('user_id', $cols)) {
+                    $strict = defined('OWNERSHIP_STRICT') && OWNERSHIP_STRICT;
+                    $cond = $strict ? 'user_id = :uid' : '(user_id = :uid OR user_id IS NULL)';
+                    $stmt = $pdo->prepare('SELECT * FROM goals WHERE ' . $cond . ' ORDER BY created_at DESC');
+                    $stmt->execute([':uid' => ($_SESSION['user_id'] ?? -1)]);
+                } else {
+                    $stmt = $pdo->query('SELECT * FROM goals ORDER BY created_at DESC');
+                }
                 echo json_encode(['success'=>true,'goals'=>$stmt->fetchAll(PDO::FETCH_ASSOC)]);
             }
             break;
@@ -2089,11 +2310,37 @@ try {
         case 'get_progress': {
             $sid = isset($_POST['student_id']) ? (int)$_POST['student_id'] : 0;
             if ($sid) {
-                $stmt = $pdo->prepare('SELECT * FROM progress_updates WHERE student_id = :sid ORDER BY created_at DESC');
-                $stmt->execute([':sid'=>$sid]);
+                // Enforce ownership on student when schema supports it (prevents leakage from legacy NULL user_id rows)
+                try {
+                    $tiS = $pdo->prepare("PRAGMA table_info('students')"); $tiS->execute(); $scols = array_column($tiS->fetchAll(PDO::FETCH_ASSOC), 'name');
+                    if (!empty($scols)) {
+                        $cond = '';
+                        $paramsChk = [':id'=>$sid, ':uid'=>(int)($_SESSION['user_id'] ?? -1)];
+                        if (in_array('user_id',$scols)) { $cond = 'user_id = :uid'; }
+                        elseif (in_array('assigned_therapist',$scols)) { $cond = 'assigned_therapist = :uid'; }
+                        if ($cond !== '') {
+                            $cs = $pdo->prepare('SELECT COUNT(*) FROM students WHERE id = :id AND ' . $cond);
+                            $cs->execute($paramsChk);
+                            if ((int)$cs->fetchColumn() === 0) { echo json_encode(['success'=>false,'error'=>'Forbidden','message'=>'Not your student']); break; }
+                        }
+                    }
+                } catch (Throwable $_e) {}
+                try { $ti = $pdo->prepare("PRAGMA table_info('progress_updates')"); $ti->execute(); $cols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name'); } catch (Throwable $_e) { $cols = []; }
+                $sql = 'SELECT * FROM progress_updates WHERE student_id = :sid'; $params = [':sid'=>$sid];
+                if (in_array('user_id', $cols)) { $sql .= ' AND (user_id = :uid OR user_id IS NULL)'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+                $sql .= ' ORDER BY created_at DESC';
+                $stmt = $pdo->prepare($sql); $stmt->execute($params);
                 echo json_encode(['success'=>true,'progress'=>$stmt->fetchAll(PDO::FETCH_ASSOC)]);
             } else {
-                $stmt = $pdo->query('SELECT * FROM progress_updates ORDER BY created_at DESC');
+                try { $ti = $pdo->prepare("PRAGMA table_info('progress_updates')"); $ti->execute(); $cols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name'); } catch (Throwable $_e) { $cols = []; }
+                if (in_array('user_id', $cols)) {
+                    $strict = defined('OWNERSHIP_STRICT') && OWNERSHIP_STRICT;
+                    $cond = $strict ? 'user_id = :uid' : '(user_id = :uid OR user_id IS NULL)';
+                    $stmt = $pdo->prepare('SELECT * FROM progress_updates WHERE ' . $cond . ' ORDER BY created_at DESC');
+                    $stmt->execute([':uid' => ($_SESSION['user_id'] ?? -1)]);
+                } else {
+                    $stmt = $pdo->query('SELECT * FROM progress_updates ORDER BY created_at DESC');
+                }
                 echo json_encode(['success'=>true,'progress'=>$stmt->fetchAll(PDO::FETCH_ASSOC)]);
             }
             break;
@@ -2101,13 +2348,19 @@ try {
 
         // Get recent activity (AJAX-friendly) - include progress_reports when available
         case 'get_recent_activity': {
-            $limit = isset($_POST['limit']) ? (int)$_POST['limit'] : 20;
-            if ($limit <= 0 || $limit > 200) $limit = 20;
+            // Enforce server-side cap of 10
+            $limit = isset($_POST['limit']) ? (int)$_POST['limit'] : 10;
+            if ($limit <= 0 || $limit > 10) $limit = 10;
 
             $items = [];
-            // new students
+            // new students (scope by user when column exists)
             try {
-                $stmt = $pdo->prepare("SELECT id, first_name, last_name, COALESCE(created_at, updated_at) AS ts FROM students WHERE archived = 0 ORDER BY ts DESC LIMIT :lim");
+                $ti = $pdo->prepare("PRAGMA table_info('students')"); $ti->execute(); $scols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name');
+                $sql = "SELECT id, first_name, last_name, COALESCE(created_at, updated_at) AS ts FROM students WHERE archived = 0";
+                if (in_array('user_id', $scols)) { $sql .= (defined('OWNERSHIP_STRICT') && OWNERSHIP_STRICT) ? ' AND user_id = :uid' : ' AND (user_id = :uid OR user_id IS NULL)'; }
+                $sql .= ' ORDER BY ts DESC LIMIT :lim';
+                $stmt = $pdo->prepare($sql);
+                if (in_array('user_id', $scols)) $stmt->bindValue(':uid', $_SESSION['user_id'] ?? -1);
                 $stmt->bindValue(':lim', $limit, PDO::PARAM_INT);
                 $stmt->execute();
                 foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
@@ -2115,13 +2368,38 @@ try {
                 }
             } catch (Throwable $e) {}
 
-            // canonical document tables
+            // canonical document tables (strictly scope by students ownership for non-admins)
+            try {
+                $sti = $pdo->prepare("PRAGMA table_info('students')"); $sti->execute(); $studentCols = array_column($sti->fetchAll(PDO::FETCH_ASSOC), 'name');
+            } catch (Throwable $_e) { $studentCols = []; }
+            $hasStuUserId = in_array('user_id', $studentCols);
+            $hasStuTherapist = in_array('assigned_therapist', $studentCols);
+            // Compute owned student ids for activity_log and document scoping
+            $ownedStudentIds = [];
+            try {
+                if ($hasStuUserId || $hasStuTherapist) {
+                    $sqlOwned = 'SELECT id FROM students WHERE archived = 0';
+                    $paramsOwned = [];
+                    if ($hasStuUserId) { $sqlOwned .= ' AND user_id = :uid'; $paramsOwned[':uid'] = ($_SESSION['user_id'] ?? -1); }
+                    elseif ($hasStuTherapist) { $sqlOwned .= ' AND assigned_therapist = :uid'; $paramsOwned[':uid'] = ($_SESSION['user_id'] ?? -1); }
+                    $stOwned = $pdo->prepare($sqlOwned); $stOwned->execute($paramsOwned);
+                    $ownedStudentIds = array_map('intval', $stOwned->fetchAll(PDO::FETCH_COLUMN));
+                }
+            } catch (Throwable $_e) { $ownedStudentIds = []; }
             $docTables = ['goals','initial_evaluations','session_reports','other_documents','discharge_reports'];
             foreach ($docTables as $tbl) {
                 try {
                     $pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=:tbl"); $pi->execute([':tbl'=>$tbl]); if (!$pi->fetchColumn()) continue;
-                    $sql = "SELECT id, student_id, COALESCE(title, '') AS title, COALESCE(created_at, updated_at) AS ts FROM {$tbl} WHERE student_id IS NOT NULL ORDER BY ts DESC LIMIT :lim";
+                    // Join to students and filter by ownership; avoid relying on table-level user_id which may be NULL for legacy rows
+                    $sql = "SELECT t.id, t.student_id, COALESCE(t.title, '') AS title, COALESCE(t.created_at, t.updated_at) AS ts FROM {$tbl} t JOIN students s ON t.student_id = s.id WHERE t.student_id IS NOT NULL";
+                    $params = [];
+                    // Always scope by ownership; if no ownership column, deny to avoid leakage
+                    if ($hasStuUserId) { $sql .= ' AND s.user_id = :uid'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+                    elseif ($hasStuTherapist) { $sql .= ' AND s.assigned_therapist = :uid'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+                    else { $sql .= ' AND 1=0'; }
+                    $sql .= ' ORDER BY ts DESC LIMIT :lim';
                     $st = $pdo->prepare($sql);
+                    foreach ($params as $k=>$v) { $st->bindValue($k, $v); }
                     $st->bindValue(':lim', $limit, PDO::PARAM_INT);
                     $st->execute();
                     foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
@@ -2134,7 +2412,16 @@ try {
             try {
                 $pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='progress_reports'"); $pi->execute();
                 if ($pi->fetchColumn()) {
-                    $pr = $pdo->prepare("SELECT COALESCE(id, rowid) AS id, student_id, title, created_at AS ts FROM progress_reports ORDER BY created_at DESC LIMIT :lim");
+                    // Scope by students ownership
+                    $sql = "SELECT COALESCE(pr.id, pr.rowid) AS id, pr.student_id, pr.title, pr.created_at AS ts FROM progress_reports pr JOIN students s ON pr.student_id = s.id";
+                    $params = [];
+                    // Always scope by ownership
+                    if ($hasStuUserId) { $sql .= ' WHERE s.user_id = :uid'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+                    elseif ($hasStuTherapist) { $sql .= ' WHERE s.assigned_therapist = :uid'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+                    else { $sql .= ' WHERE 1=0'; }
+                    $sql .= ' ORDER BY pr.created_at DESC LIMIT :lim';
+                    $pr = $pdo->prepare($sql);
+                    foreach ($params as $k=>$v) { $pr->bindValue($k, $v); }
                     $pr->bindValue(':lim', $limit, PDO::PARAM_INT); $pr->execute();
                     foreach ($pr->fetchAll(PDO::FETCH_ASSOC) as $r) {
                         $items[] = ['type'=>'report','report_id'=>$r['id'],'student_id'=>$r['student_id'],'student_name'=>null,'title'=>$r['title'] ?? 'Progress Report','created_at'=>$r['ts'] ?? null];
@@ -2146,7 +2433,15 @@ try {
             try {
                 $pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='student_reports'"); $pi->execute();
                 if ($pi->fetchColumn()) {
-                    $sr = $pdo->prepare("SELECT id, student_id, path, COALESCE(updated_at, created_at) AS ts FROM student_reports ORDER BY ts DESC LIMIT :lim");
+                    // Scope by students ownership
+                    $sql = "SELECT sr.rowid AS id, sr.student_id, sr.path, COALESCE(sr.updated_at, sr.created_at) AS ts FROM student_reports sr JOIN students s ON sr.student_id = s.id";
+                    $params = [];
+                    if ($hasStuUserId) { $sql .= ' WHERE s.user_id = :uid'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+                    elseif ($hasStuTherapist) { $sql .= ' WHERE s.assigned_therapist = :uid'; $params[':uid'] = ($_SESSION['user_id'] ?? -1); }
+                    else { $sql .= ' WHERE 1=0'; }
+                    $sql .= ' ORDER BY ts DESC LIMIT :lim';
+                    $sr = $pdo->prepare($sql);
+                    foreach ($params as $k=>$v) { $sr->bindValue($k, $v); }
                     $sr->bindValue(':lim', $limit, PDO::PARAM_INT); $sr->execute();
                     foreach ($sr->fetchAll(PDO::FETCH_ASSOC) as $r) {
                         $items[] = ['type'=>'report','report_id'=>$r['id'],'student_id'=>$r['student_id'],'student_name'=>null,'title'=>basename($r['path'] ?? 'Progress Report'),'created_at'=>$r['ts'] ?? null];
@@ -2166,8 +2461,11 @@ try {
             foreach ($items as &$it) { if (empty($it['student_name']) && !empty($it['student_id']) && isset($studentMap[$it['student_id']])) $it['student_name'] = $studentMap[$it['student_id']]; }
             unset($it);
 
-            // Merge persisted activity_log entries so actions recorded via record_activity(...) are visible
+            // Merge persisted activity_log entries so actions recorded via record_activity(...) are visible (unless synthOnly)
             try {
+                if (!defined('RECENT_ACTIVITY_MODE')) { require_once __DIR__ . '/config.php'; }
+                $readLog = !defined('RECENT_ACTIVITY_MODE') || RECENT_ACTIVITY_MODE !== 'synthOnly';
+                if ($readLog) {
                 $pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='activity_log'"); $pi->execute();
                 if ($pi->fetchColumn()) {
                     $al = $pdo->prepare('SELECT * FROM activity_log WHERE user_id = :uid OR user_id IS NULL ORDER BY created_at DESC LIMIT :lim');
@@ -2175,6 +2473,14 @@ try {
                     $al->bindValue(':lim', $limit, PDO::PARAM_INT);
                     $al->execute();
                     foreach ($al->fetchAll(PDO::FETCH_ASSOC) as $alog) {
+                        // Privacy filter: only include entries created by the user or tied to owned students
+                        $alogUid = isset($alog['user_id']) ? (int)$alog['user_id'] : null;
+                        $alogSid = isset($alog['student_id']) ? (int)$alog['student_id'] : null;
+                        $me = (int)($_SESSION['user_id'] ?? -1);
+                        $owned = $alogSid && in_array($alogSid, $ownedStudentIds, true);
+                        if (!($alogUid !== null && $alogUid === $me) && !$owned) {
+                            continue; // skip unowned/global activity to avoid leakage
+                        }
                         $met = null;
                         if (!empty($alog['metadata']) && is_string($alog['metadata'])) {
                             $decoded = json_decode($alog['metadata'], true);
@@ -2280,6 +2586,7 @@ try {
                         }
                     }
                 }
+                }
             } catch (Throwable $e) {
                 // ignore activity_log read issues
             }
@@ -2330,54 +2637,100 @@ try {
                 $total_goals = 0;
                 $recent_sessions = 0;
                 $recent_updates = 0;
+
+                // Ownership context only (no roles): scope all counts to current user's students
+                $uid = (int)($_SESSION['user_id'] ?? -1);
+
                 // protect against missing tables by checking existence via PRAGMA
                 try {
                     $tbls = $pdo->query("SELECT name FROM sqlite_master WHERE type='table'")->fetchAll(PDO::FETCH_COLUMN);
                 } catch (Throwable $e) {
                     $tbls = [];
                 }
+
+                // Discover student ownership columns for consistent scoping
+                $scols = [];
+                if (in_array('students', $tbls)) {
+                    try { $ti = $pdo->prepare("PRAGMA table_info('students')"); $ti->execute(); $scols = array_column($ti->fetchAll(PDO::FETCH_ASSOC),'name'); } catch (Throwable $_e) { $scols = []; }
+                }
+                $hasStudentUserId = in_array('user_id', $scols);
+                $hasAssignedTherapist = in_array('assigned_therapist', $scols);
+
+                // Helper: build an ownership filter on students table
+                $studentOwnerFilter = '';
+                $ownerParams = [];
+                if ($hasStudentUserId) { $studentOwnerFilter = ' AND s.user_id = :uid'; $ownerParams[':uid'] = $uid; }
+                elseif ($hasAssignedTherapist) { $studentOwnerFilter = ' AND s.assigned_therapist = :uid'; $ownerParams[':uid'] = $uid; }
+                else { $studentOwnerFilter = ' AND 1=0'; }
+
                 if (in_array('students', $tbls)) {
                     try {
-                        $total_students = (int)$pdo->query('SELECT COUNT(*) FROM students WHERE archived = 0')->fetchColumn();
+                        // Count students with strict scoping by students table only
+                        $sql = 'SELECT COUNT(*) FROM students s WHERE s.archived = 0';
+                        $params = [];
+                        if ($studentOwnerFilter) { $sql .= $studentOwnerFilter; $params = $ownerParams; }
+                        $st = $pdo->prepare($sql); $st->execute($params);
+                        $total_students = (int)$st->fetchColumn();
                     } catch (Throwable $e) { $total_students = 0; }
                 }
+
                 if (in_array('goals', $tbls) && in_array('students', $tbls)) {
                     try {
-                        $total_goals = (int)$pdo->query('SELECT COUNT(*) FROM goals g JOIN students s ON g.student_id = s.id WHERE s.archived = 0')->fetchColumn();
+                        // Always scope by students ownership for non-admins
+                        $sql = 'SELECT COUNT(*) FROM goals g JOIN students s ON g.student_id = s.id WHERE s.archived = 0';
+                        $params = $ownerParams;
+                        if ($studentOwnerFilter) $sql .= $studentOwnerFilter;
+                        $st = $pdo->prepare($sql); $st->execute($params); $total_goals = (int)$st->fetchColumn();
                     } catch (Throwable $e) { $total_goals = 0; }
                 }
+
                 // Compute total_documents across canonical document tables (match templates/dashboard.php)
                 $total_documents = 0;
                 try {
                     $docTables = ['goals','initial_evaluations','session_reports','other_documents','discharge_reports'];
                     foreach ($docTables as $tbl) {
-                        if (in_array($tbl, $tbls)) {
-                            try {
-                                $st = $pdo->prepare("SELECT COUNT(*) FROM {$tbl} t JOIN students s ON t.student_id = s.id WHERE s.archived = 0");
-                                $st->execute();
-                                $total_documents += (int)$st->fetchColumn();
-                            } catch (Throwable $e) { /* ignore per-table errors */ }
-                        }
+                        if (!in_array($tbl, $tbls) || !in_array('students', $tbls)) continue;
+                        try {
+                            // Scope by students ownership only; avoid relying on t.user_id which may be NULL in legacy rows
+                            $sql = "SELECT COUNT(*) FROM {$tbl} t JOIN students s ON t.student_id = s.id WHERE s.archived = 0";
+                            $params = $ownerParams;
+                            if ($studentOwnerFilter) $sql .= $studentOwnerFilter;
+                            $st = $pdo->prepare($sql); $st->execute($params);
+                            $total_documents += (int)$st->fetchColumn();
+                        } catch (Throwable $e) { /* ignore per-table errors */ }
                     }
                 } catch (Throwable $e) { $total_documents = $total_documents ?? 0; }
 
                 // Prefer a dedicated `progress_reports` table; otherwise fallback to student_reports or legacy reports
                 if (in_array('progress_reports', $tbls) && in_array('students', $tbls)) {
                     try {
-                        $recent_sessions = (int)$pdo->query('SELECT COUNT(*) FROM progress_reports pr JOIN students s ON pr.student_id = s.id WHERE s.archived = 0')->fetchColumn();
+                        $sql = 'SELECT COUNT(*) FROM progress_reports pr JOIN students s ON pr.student_id = s.id WHERE s.archived = 0';
+                        $params = $ownerParams;
+                        if ($studentOwnerFilter) $sql .= $studentOwnerFilter;
+                        $st = $pdo->prepare($sql); $st->execute($params); $recent_sessions = (int)$st->fetchColumn();
                     } catch (Throwable $e) { $recent_sessions = 0; }
                 } elseif (in_array('student_reports', $tbls) && in_array('students', $tbls)) {
                     try {
-                        $recent_sessions = (int)$pdo->query('SELECT COUNT(*) FROM student_reports sr JOIN students s ON sr.student_id = s.id WHERE s.archived = 0')->fetchColumn();
+                        $sql = 'SELECT COUNT(*) FROM student_reports sr JOIN students s ON sr.student_id = s.id WHERE s.archived = 0';
+                        $params = $ownerParams;
+                        if ($studentOwnerFilter) $sql .= $studentOwnerFilter;
+                        $st = $pdo->prepare($sql); $st->execute($params); $recent_sessions = (int)$st->fetchColumn();
                     } catch (Throwable $e) { $recent_sessions = 0; }
                 } elseif (in_array('reports', $tbls) && in_array('students', $tbls)) {
                     try {
-                        $recent_sessions = (int)$pdo->query('SELECT COUNT(*) FROM reports r JOIN students s ON r.student_id = s.id WHERE s.archived = 0')->fetchColumn();
+                        $sql = 'SELECT COUNT(*) FROM reports r JOIN students s ON r.student_id = s.id WHERE s.archived = 0';
+                        $params = $ownerParams;
+                        if ($studentOwnerFilter) $sql .= $studentOwnerFilter;
+                        $st = $pdo->prepare($sql); $st->execute($params); $recent_sessions = (int)$st->fetchColumn();
                     } catch (Throwable $e) { $recent_sessions = 0; }
                 }
+
                 if (in_array('progress_updates', $tbls) && in_array('students', $tbls)) {
                     try {
-                        $recent_updates = (int)$pdo->query('SELECT COUNT(*) FROM progress_updates p JOIN students s ON p.student_id = s.id WHERE s.archived = 0 AND p.created_at >= datetime("now","-30 days")')->fetchColumn();
+                        $sql = 'SELECT COUNT(*) FROM progress_updates p JOIN students s ON p.student_id = s.id WHERE s.archived = 0 AND p.created_at >= datetime("now","-30 days")';
+                        $params = $ownerParams;
+                        if ($studentOwnerFilter) $sql .= $studentOwnerFilter;
+                        $st = $pdo->prepare($sql); $st->execute($params); $recent_updates = (int)$st->fetchColumn();
                     } catch (Throwable $e) { $recent_updates = 0; }
                 }
 
@@ -2391,6 +2744,8 @@ try {
         case 'update_student': {
             $studentId = isset($_POST['student_id']) ? (int)$_POST['student_id'] : 0;
             if (!$studentId) { echo json_encode(['success'=>false,'error'=>'Student ID required','message'=>'Student ID required']); break; }
+            if (empty($_SESSION['user_id'])) { echo json_encode(['success'=>false,'error'=>'Unauthorized','message'=>'Unauthorized']); break; }
+            $uid = (int)$_SESSION['user_id'];
 
             // Build candidate updates and only include columns that exist in the students table
             $candidates = [
@@ -2431,7 +2786,9 @@ try {
             }
             $params[':id'] = $studentId;
 
-            $sql = 'UPDATE students SET ' . implode(', ', $sets) . ' WHERE id = :id';
+            try { $ti = $pdo->query("PRAGMA table_info('students')"); $cols = array_column($ti->fetchAll(PDO::FETCH_ASSOC), 'name'); } catch (Throwable $_e) { $cols = []; }
+            if (in_array('user_id', $cols)) { $sql = 'UPDATE students SET ' . implode(', ', $sets) . ' WHERE id = :id AND (user_id = :uid OR user_id IS NULL)'; $params[':uid'] = $uid; }
+            else { $sql = 'UPDATE students SET ' . implode(', ', $sets) . ' WHERE id = :id'; }
             $stmt = $pdo->prepare($sql);
             $stmt->execute($params);
 
@@ -2439,12 +2796,27 @@ try {
             break;
         }
 
+        
+
         // Upload a file and create an other_documents row
         case 'upload_document': {
             try {
                 if (empty($_FILES['file'])) throw new Exception('No file uploaded');
                 $student_id = isset($_POST['student_id']) ? (int)$_POST['student_id'] : 0;
                 if (!$student_id) throw new Exception('Student ID required');
+                // Enforce ownership of student for uploads
+                try { $tiS = $pdo->prepare("PRAGMA table_info('students')"); $tiS->execute(); $scols = array_column($tiS->fetchAll(PDO::FETCH_ASSOC), 'name'); } catch (Throwable $_e) { $scols = []; }
+                if (!empty($scols)) {
+                    $cond = '';
+                    $params = [':id'=>$student_id, ':uid'=>(int)($_SESSION['user_id'] ?? -1)];
+                    if (in_array('user_id',$scols)) { $cond = 'user_id = :uid'; }
+                    elseif (in_array('assigned_therapist',$scols)) { $cond = 'assigned_therapist = :uid'; }
+                    if ($cond !== '') {
+                        $chk = $pdo->prepare('SELECT COUNT(*) FROM students WHERE id = :id AND ' . $cond);
+                        $chk->execute($params);
+                        if ((int)$chk->fetchColumn() === 0) throw new Exception('Forbidden: Not your student');
+                    }
+                }
                 $title = trim($_POST['title'] ?? 'Uploaded Document');
 
                 // Determine mime type: prefer finfo, then mime_content_type, then client-provided type
@@ -2476,6 +2848,7 @@ try {
                     'title' => $title,
                     'metadata' => json_encode(['orig_name'=>$orig,'mime'=>$mime,'size'=>$_FILES['file']['size']]),
                     'file_path' => 'uploads/' . $filename,
+                    'user_id' => $_SESSION['user_id'] ?? null,
                     'created_at' => date('c')
                 ];
                 // prefer to set form_type when the schema supports it
@@ -2500,6 +2873,26 @@ try {
                 http_response_code(400);
                 echo json_encode(['success'=>false,'message'=>$e->getMessage()]);
             }
+            break;
+        }
+
+        case 'bulk_assign_all_to_admin': {
+            // Admin-only utility: assign all existing rows with NULL user_id to admin (id:2)
+            if (empty($_SESSION['user_id'])) { echo json_encode(['success'=>false,'error'=>'Unauthorized']); break; }
+            // Roles removed: disallow this action to avoid unintended global changes
+            echo json_encode(['success'=>false,'error'=>'Forbidden']);
+            break;
+        }
+
+        case 'bulk_reassign_from_user': {
+            // Admin-only utility: reassign all rows from a specific user to admin (or another target user)
+            if (empty($_SESSION['user_id'])) { echo json_encode(['success'=>false,'error'=>'Unauthorized']); break; }
+            $sourceUser = isset($_POST['source_user_id']) ? (int)$_POST['source_user_id'] : 0;
+            $targetUser = isset($_POST['target_user_id']) ? (int)$_POST['target_user_id'] : 2; // default to admin id 2
+            if ($sourceUser <= 0) { echo json_encode(['success'=>false,'error'=>'source_user_id required']); break; }
+            if ($sourceUser === $targetUser) { echo json_encode(['success'=>false,'error'=>'source and target are identical']); break; }
+            // Roles removed: disallow this action to avoid unintended global changes
+            echo json_encode(['success'=>false,'error'=>'Forbidden']);
             break;
         }
 

@@ -64,8 +64,10 @@ function sqlite_init() {
         medical_info TEXT,
         iep_status TEXT,
         service_frequency TEXT,
+        user_id INTEGER,
         created_at TEXT,
-        updated_at TEXT
+        updated_at TEXT,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
     );");
 
     // Create goals and progress tables minimally (optional)
@@ -78,8 +80,10 @@ function sqlite_init() {
         baseline_score INTEGER,
         target_score INTEGER,
         status TEXT,
+        user_id INTEGER,
         created_at TEXT,
-        updated_at TEXT
+        updated_at TEXT,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
     );");
 
     // Progress tracking tables
@@ -90,6 +94,7 @@ function sqlite_init() {
         category TEXT,
         subcategory TEXT,
         created_by INTEGER,
+        user_id INTEGER,
         created_at TEXT,
         updated_at TEXT,
         FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
@@ -103,6 +108,7 @@ function sqlite_init() {
         target_score INTEGER,
         notes TEXT,
         recorded_by INTEGER,
+        user_id INTEGER,
         date_recorded TEXT,
         created_at TEXT,
         FOREIGN KEY (skill_id) REFERENCES progress_skills(id) ON DELETE CASCADE,
@@ -141,6 +147,7 @@ function sqlite_init() {
         therapist_id INTEGER,
         metadata TEXT,
         content TEXT,
+        user_id INTEGER,
         created_at TEXT,
         FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
     );");
@@ -152,7 +159,8 @@ function sqlite_init() {
         created_at TEXT,
         updated_at TEXT,
         created_by INTEGER,
-        status TEXT
+        status TEXT,
+        user_id INTEGER
     );");
 
     // Create per-form normalized tables
@@ -162,7 +170,7 @@ function sqlite_init() {
         title TEXT,
         therapist_id INTEGER,
         metadata TEXT,
-        content TEXT,
+        user_id INTEGER,
         created_at TEXT,
         FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
     );");
@@ -176,7 +184,7 @@ function sqlite_init() {
         title TEXT,
         therapist_id INTEGER,
         metadata TEXT,
-        content TEXT,
+        user_id INTEGER,
         created_at TEXT,
         FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
     );");
@@ -187,7 +195,7 @@ function sqlite_init() {
         title TEXT,
         therapist_id INTEGER,
         metadata TEXT,
-        content TEXT,
+        user_id INTEGER,
         created_at TEXT,
         FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
     );");
@@ -197,21 +205,12 @@ function sqlite_init() {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         student_id INTEGER,
         title TEXT,
+        user_id INTEGER,
         created_at TEXT,
         FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
     );");
 
-    // Activity log table for recent activity feed
-    $pdo->exec("CREATE TABLE IF NOT EXISTS activity_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        type TEXT,
-        student_id INTEGER,
-        user_id INTEGER,
-        description TEXT,
-        metadata TEXT,
-        created_at TEXT,
-        FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
-    );");
+    // activity_log table intentionally not created by default; dashboard uses synthesized activity
 
     return $pdo;
 }
@@ -221,21 +220,29 @@ function get_db() {
     static $pdo = null;
     if ($pdo instanceof PDO) return $pdo;
     $dbFile = sqlite_get_path();
+    // If DB doesn't exist yet, initialize it (creates file, tables, and sets busy_timeout)
     if (!file_exists($dbFile)) {
-        throw new Exception("Database file not found: $dbFile. Run the migration script or create the DB using the provided schema.");
-    }
-    if (!class_exists('PDO') || !extension_loaded('pdo_sqlite')) {
-        throw new Exception("SQLite PDO driver not available. Enable the 'pdo_sqlite' extension in your php.ini and restart your webserver.");
-    }
-    try {
-        $dsn = 'sqlite:' . $dbFile;
-        $pdo = new PDO($dsn);
-        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    } catch (PDOException $e) {
-        throw new Exception('Failed to open SQLite database: ' . $e->getMessage());
+        try {
+            $pdo = sqlite_init();
+        } catch (Throwable $e) {
+            throw new Exception("Database initialization failed: " . $e->getMessage());
+        }
+    } else {
+        if (!class_exists('PDO') || !extension_loaded('pdo_sqlite')) {
+            throw new Exception("SQLite PDO driver not available. Enable the 'pdo_sqlite' extension in your php.ini and restart your webserver.");
+        }
+        try {
+            $dsn = 'sqlite:' . $dbFile;
+            $pdo = new PDO($dsn);
+            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        } catch (PDOException $e) {
+            throw new Exception('Failed to open SQLite database: ' . $e->getMessage());
+        }
+        // Apply a reasonable busy timeout for consistency with sqlite_init
+        try { $pdo->exec('PRAGMA busy_timeout = 3000'); } catch (Throwable $_e) {}
     }
     // ensure foreign keys
-    $pdo->exec('PRAGMA foreign_keys = ON');
+    try { $pdo->exec('PRAGMA foreign_keys = ON'); } catch (Throwable $_e) {}
 
     // Best-effort schema migrations for users table to ensure email/password_hash exist
     try {
@@ -249,24 +256,28 @@ function get_db() {
             try { $pdo->exec("ALTER TABLE users ADD COLUMN password_hash TEXT"); } catch (Throwable $_e) { /* ignore */ }
         }
     } catch (Throwable $e) { /* ignore */ }
+
+    // Online migrations: ensure user_id column exists across key tables
+    $tablesToAddUser = [
+        'students','goals','progress_skills','progress_updates','other_documents',
+        'student_reports','initial_evaluations','session_reports','discharge_reports','progress_reports'
+    ];
+    foreach ($tablesToAddUser as $tbl) {
+        try {
+            $pi = $pdo->prepare("PRAGMA table_info('".$tbl."')");
+            $pi->execute();
+            $cols = array_column($pi->fetchAll(PDO::FETCH_ASSOC), 'name');
+            if (!in_array('user_id', $cols)) {
+                try { $pdo->exec("ALTER TABLE " . $tbl . " ADD COLUMN user_id INTEGER"); } catch (Throwable $_e) { /* ignore */ }
+            }
+        } catch (Throwable $_e) { /* ignore */ }
+    }
     return $pdo;
 }
 
+// Backwards-compatibility: delegate to get_db() so callers using sqlite_get_pdo still work
 function sqlite_get_pdo() {
-    static $pdo = null;
-    if ($pdo === null) {
-        $path = sqlite_get_path();
-        if (!class_exists('PDO') || !extension_loaded('pdo_sqlite')) {
-            throw new Exception("SQLite PDO driver not available. Enable the 'pdo_sqlite' extension in your php.ini and restart your webserver.");
-        }
-        try {
-            $pdo = new PDO('sqlite:' . $path);
-            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        } catch (PDOException $e) {
-            throw new Exception('Failed to open SQLite database: ' . $e->getMessage());
-        }
-    }
-    return $pdo;
+    return get_db();
 }
 
 // Removed unused helper sqlite_find_user_by_username() to reduce dead code.

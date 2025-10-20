@@ -9,6 +9,24 @@ import progressModule from './pages/progress.js';
 // quickProgress helper removed — use showAddProgressModal directly from the progress module
 
 document.addEventListener('DOMContentLoaded', () => {
+    // Footer modal wiring (moved from footer.php)
+    document.addEventListener('click', function(e){
+        try {
+            const t = e.target;
+            if (t.matches && t.matches('.footer-container a[data-modal]')) {
+                e.preventDefault();
+                const which = t.getAttribute('data-modal');
+                const tpl = document.getElementById('tmpl-footer-' + which);
+                if (!tpl) return;
+                const frag = tpl.content.cloneNode(true);
+                const container = document.createElement('div');
+                container.className = 'footer-modal-host';
+                container.appendChild(frag);
+                document.body.appendChild(container);
+                container.querySelectorAll('.close-modal, .modal-overlay').forEach(btn => btn.addEventListener('click', () => { try { container.remove(); } catch (e) { container.style.display = 'none'; } }));
+            }
+        } catch (err) { console.warn('footer modal error', err); }
+    });
     function attachModalHandlers(root = document) {
         // ensure buttons with data-open-modal open the templates and allow optional preselect
         root.querySelectorAll('[data-open-modal]').forEach(btn => {
@@ -126,6 +144,128 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+    // Progress page: select change and initial init (moved from templates/progress.php)
+    try {
+        const select = document.getElementById('progressStudentSelect');
+        const addBtn = document.getElementById('addProgressBtn');
+        if (select) {
+            // Define handler if not present
+            if (typeof window.handleProgressSelectChange !== 'function') {
+                window.handleProgressSelectChange = function(val) {
+                    try {
+                        const sel = document.getElementById('progressStudentSelect');
+                        const studentId = (typeof val !== 'undefined' && val !== null) ? String(val) : (sel ? sel.value : '');
+                        const newUrl = '?view=progress' + (studentId ? ('&student_id=' + encodeURIComponent(studentId)) : '');
+                        try { history.pushState({}, '', newUrl); } catch (e) {}
+
+                        const nameEl = document.getElementById('progressStudentName');
+                        if (nameEl) {
+                            if (studentId && sel) {
+                                const option = sel.options[sel.selectedIndex];
+                                const txt = option ? (option.textContent || '') : '';
+                                nameEl.textContent = txt ? txt.split(' - ')[0] : '\u00A0';
+                            } else {
+                                nameEl.textContent = '\u00A0';
+                            }
+                        }
+
+                        // Ensure overview exists
+                        let overview = document.querySelector('.progress-overview');
+                        if (!studentId) {
+                            if (overview) try { overview.remove(); } catch (e) { overview.style.display = 'none'; }
+                            const noSel = document.querySelector('.no-student-selected'); if (noSel) noSel.style.display = 'block';
+                            const addBtn = document.getElementById('addProgressBtn'); if (addBtn) { addBtn.disabled = true; addBtn.classList.add('btn-disabled'); addBtn.textContent = 'Create Progress Report'; try { addBtn.removeAttribute('data-student-id'); } catch(e) {} }
+                            const createBtn = document.getElementById('createReport'); if (createBtn) { createBtn.disabled = true; createBtn.classList.add('btn-disabled'); }
+                            const delBtn = document.getElementById('deleteReport'); if (delBtn) { delBtn.disabled = true; delBtn.classList.add('btn-disabled'); }
+                            document.querySelectorAll('.no-progress, .progress-stats, .progress-chart-container, .progress-history, .skills-list').forEach(el => { if (el) el.style.display = 'none'; });
+                            return;
+                        }
+
+                        const noSel = document.querySelector('.no-student-selected'); if (noSel) noSel.style.display = 'none';
+                        if (!overview) {
+                            overview = document.createElement('div'); overview.className = 'progress-overview';
+                            const toolbar = document.querySelector('.progress-toolbar');
+                            if (toolbar && toolbar.parentNode) toolbar.parentNode.insertBefore(overview, toolbar.nextSibling);
+                            else document.querySelector('.container')?.appendChild(overview);
+                        }
+                        if (progressModule && typeof progressModule.initializeProgress === 'function') try { progressModule.initializeProgress(Number(studentId)); } catch (e) { console.error('initializeProgress failed', e); }
+                    } catch (err) { console.error('handleProgressSelectChange error', err); }
+                };
+            }
+            // Bind change event to avoid inline onchange in template
+            try { select.addEventListener('change', (e) => window.handleProgressSelectChange(e.target.value)); } catch (e) {}
+
+            // Initial auto-init on page load when selected
+            const sid = select && select.value ? select.value : (function(){ try { const p = new URLSearchParams(window.location.search); return p.get('student_id') || p.get('id') || ''; } catch(e){ return ''; } })();
+            // Set the visible student name in reserved element to avoid layout shift
+            try {
+                const nameElInit = document.getElementById('progressStudentName');
+                if (nameElInit) {
+                    if (select && select.value && select.selectedIndex >= 0) {
+                        const opt = select.options[select.selectedIndex];
+                        const txt = opt ? (opt.textContent || '') : '';
+                        nameElInit.textContent = txt ? txt.split(' - ')[0] : '\u00A0';
+                    } else {
+                        nameElInit.textContent = '\u00A0';
+                    }
+                }
+            } catch (e) { /* ignore */ }
+            if (sid && progressModule && typeof progressModule.initializeProgress === 'function') {
+                try { progressModule.initializeProgress(Number(sid)); } catch (e) { console.error(e); }
+            }
+        }
+
+        // Add Progress button: open Add Skill modal for selected student
+        if (addBtn) {
+            addBtn.addEventListener('click', async function(){
+                const getSidFromUrl = () => { try { const p = new URLSearchParams(window.location.search); return p.get('student_id') || p.get('id') || ''; } catch (e) { return ''; } };
+                let sid2 = (select && select.value) ? select.value : (this.getAttribute('data-student-id') || '');
+                if (!sid2) sid2 = getSidFromUrl() || '';
+                if (!sid2) { alert('Select a student first'); return; }
+                // Behavior:
+                // - If a report exists: open Add Skill modal
+                // - If no report: prompt to create (do NOT auto-open add-skill after)
+                try {
+                    // Ask server for latest report; if present, open Add Skill
+                    const fd = new URLSearchParams(); fd.append('action','get_latest_progress_report'); fd.append('student_id', String(sid2));
+                    const latest = await apiFetch('/includes/submit.php', { method: 'POST', body: fd.toString(), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+                    if (latest && latest.success && latest.report) {
+                        const ev = new CustomEvent('openAddSkill', { detail: { student_id: Number(sid2) } });
+                        document.dispatchEvent(ev);
+                        return;
+                    }
+                    // Fallback: treat legacy student_reports as an active report (no creation)
+                    try {
+                        const fd2 = new URLSearchParams(); fd2.append('action','get_student_report'); fd2.append('student_id', String(sid2));
+                        const legacy = await apiFetch('/includes/submit.php', { method: 'POST', body: fd2.toString(), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+                        if (legacy && legacy.success && (legacy.report || legacy.html)) {
+                            const ev = new CustomEvent('openAddSkill', { detail: { student_id: Number(sid2) } });
+                            document.dispatchEvent(ev);
+                            return;
+                        }
+                    } catch (e) { /* ignore and proceed to creation flow */ }
+                } catch (e) { /* ignore and fall back to create flow */ }
+                // No existing report: prompt to create a report (title modal), and stop there
+                try {
+                    if (window.progressModule && typeof window.progressModule.ensureStudentReportExists === 'function') {
+                        const res = await window.progressModule.ensureStudentReportExists(Number(sid2));
+                        // If a report was created now, open Add Skill with created flag; if only detected legacy/existing, open normal Add Skill
+                        if (res && (res.created || res.report)) {
+                            const ev = new CustomEvent('openAddSkill', { detail: { student_id: Number(sid2) } });
+                            document.dispatchEvent(ev);
+                            return;
+                        }
+                        // Otherwise, user canceled creation — do nothing further
+                        return;
+                    }
+                } catch (e) { /* ignore */ }
+                // Fallback: dispatch the event which will handle prompting as needed
+                const ev = new CustomEvent('openAddSkill', { detail: { student_id: Number(sid2) } });
+                document.dispatchEvent(ev);
+            });
+        }
+    } catch (e) { /* ignore */ }
+
     // GLOBAL helper for legacy onclick handlers
     // Delegate to the canonical page module's modal when possible
     window.showAddStudentModal = function(preselectId) {
@@ -212,9 +352,6 @@ function initializeView() {
         case 'progress':
             initializeProgressView();
             break;
-        case 'reports':
-            initializeReportsView();
-            break;
     }
 }
 
@@ -297,61 +434,7 @@ function initializeProgressView() {
     }
 }
 
-// Reports Functions
-function initializeReportsView() {
-    const form = document.getElementById('createReportForm');
-    if (form) {
-        form.addEventListener('submit', submitReportForm);
-    }
-}
-
-async function submitReportForm(e) {
-    e.preventDefault();
-    
-    const formData = new FormData(e.target);
-    const reportData = Object.fromEntries(formData.entries());
-    
-    // Add option to generate PDF
-    reportData.generate_pdf = true;
-    
-    // Validate required fields
-    if (!reportData.student_id || !reportData.report_type) {
-        showNotification('Please select a student and report type', 'error');
-        return;
-    }
-    
-    try {
-        showNotification('Generating report...', 'info');
-
-        const response = await apiFetch('api/reports.php', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(reportData)
-        });
-        
-        const result = await response.json();
-        
-        if (response.ok) {
-            showNotification('Report generated successfully!', 'success');
-            
-            // Open the generated report in a new window
-            if (result.report_data && result.report_data.pdf_path) {
-                setTimeout(() => {
-                    window.open(result.report_data.pdf_path, '_blank');
-                }, 1000);
-            }
-            
-            // Reset form
-            e.target.reset();
-        } else {
-            showNotification(result.error || 'Failed to generate report', 'error');
-        }
-    } catch (error) {
-        showNotification('Network error: ' + error.message, 'error');
-    }
-}
+// Reports view and legacy API submission removed: reporting is handled within progress/documentation modules
 
 // Utility Functions
 function handleFormSubmit(e) {

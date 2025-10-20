@@ -10,28 +10,27 @@ require_once __DIR__ . '/../includes/sqlite.php';
 // Determine current user context
 $currentUser = getCurrentUser();
 $currentUserId = $currentUser['id'] ?? ($_SESSION['user_id'] ?? null);
-$isAdmin = isset($currentUser['role']) && $currentUser['role'] === 'admin';
+// roles removed
 
 // Load students from SQLite instead of students.json
 try {
     $pdo = get_db();
-    if ($isAdmin) {
-        $stmt = $pdo->query('SELECT * FROM students ORDER BY last_name, first_name');
-        $user_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
-	} else {
-		// If assigned_therapist column isn't present in this schema, fall back to returning all non-archived students
+		// Prefer strict ownership by user_id when available; otherwise return no students to avoid leakage
 		$pi2 = $pdo->prepare("PRAGMA table_info('students')");
 		$pi2->execute();
 		$studentCols = array_column($pi2->fetchAll(PDO::FETCH_ASSOC), 'name');
-		if (in_array('assigned_therapist', $studentCols)) {
-			$stmt = $pdo->prepare('SELECT * FROM students WHERE assigned_therapist = :uid OR assigned_therapist IS NULL ORDER BY last_name, first_name');
+		if (in_array('user_id', $studentCols)) {
+			$stmt = $pdo->prepare('SELECT * FROM students WHERE user_id = :uid AND (archived = 0 OR archived IS NULL) ORDER BY last_name, first_name');
+			$stmt->execute([':uid' => $currentUserId]);
+			$user_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+		} else if (in_array('assigned_therapist', $studentCols)) {
+			// Fallback for very old schemas
+			$stmt = $pdo->prepare('SELECT * FROM students WHERE assigned_therapist = :uid AND (archived = 0 OR archived IS NULL) ORDER BY last_name, first_name');
 			$stmt->execute([':uid' => $currentUserId]);
 			$user_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
 		} else {
-			$stmt = $pdo->query('SELECT * FROM students WHERE archived = 0 ORDER BY last_name, first_name');
-			$user_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+			$user_students = [];
 		}
-	}
 } catch (Exception $e) {
     // fallback to empty array so template still renders
     $user_students = [];
@@ -45,8 +44,17 @@ if (($action === 'profile' || $action === 'edit') && $profileStudentId) {
 	// Fetch the requested student directly from the DB so profiles render regardless of filters
 	try {
 		$pdo = get_db();
-		$stmt = $pdo->prepare('SELECT * FROM students WHERE id = :id LIMIT 1');
-		$stmt->execute([':id' => $profileStudentId]);
+	// Enforce ownership when user_id column exists
+		$pi = $pdo->prepare("PRAGMA table_info('students')");
+		$pi->execute();
+		$cols = array_column($pi->fetchAll(PDO::FETCH_ASSOC), 'name');
+		if (in_array('user_id', $cols)) {
+			$stmt = $pdo->prepare('SELECT * FROM students WHERE id = :id AND user_id = :uid LIMIT 1');
+			$stmt->execute([':id' => $profileStudentId, ':uid' => $currentUserId]);
+		} else {
+			$stmt = $pdo->prepare('SELECT * FROM students WHERE id = :id LIMIT 1');
+			$stmt->execute([':id' => $profileStudentId]);
+		}
 		$profileStudent = $stmt->fetch(PDO::FETCH_ASSOC);
 	} catch (Exception $e) {
 		$profileStudent = null;
@@ -94,7 +102,10 @@ ksort($students_by_grade, SORT_NATURAL);
 <div class="container">
 	<div class="page-header stack">
 		<h1>My Students</h1>
-		<button class="btn btn-primary primary-action-left" type="button" onclick="try{ if(typeof showAddStudentModal === 'function'){ showAddStudentModal(); } else { const tpl = document.getElementById('tmpl-add-student'); if(tpl){ const clone = tpl.content.cloneNode(true); const container = document.createElement('div'); container.appendChild(clone); insertModal(container); } } }catch(e){ console.error(e); }">Add New Student</button>
+		<div class="actions-row" style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;">
+			<button class="btn btn-primary primary-action-left" type="button" onclick="try{ if(typeof showAddStudentModal === 'function'){ showAddStudentModal(); } else { const tpl = document.getElementById('tmpl-add-student'); if(tpl){ const clone = tpl.content.cloneNode(true); const container = document.createElement('div'); container.appendChild(clone); insertModal(container); } } }catch(e){ console.error(e); }">Add New Student</button>
+
+		</div>
 	</div>
     
 	<div class="students-controls">
@@ -120,63 +131,7 @@ ksort($students_by_grade, SORT_NATURAL);
 			</select>
 		</div>
 	</div>
-		<script>
-		// Fallback: define editStudentProfile if the main JS didn't expose it. This ensures
-		// clicking Edit opens the edit modal and submits update_student via AJAX.
-		(function(){
-			if (typeof window.editStudentProfile === 'function') return;
-			window.editStudentProfile = function(studentId){
-				try {
-					var fd = new URLSearchParams(); fd.append('action','get_student'); fd.append('id', String(studentId));
-					fetch('/includes/submit.php', { method: 'POST', headers: {'Content-Type':'application/x-www-form-urlencoded'}, body: fd.toString() })
-					.then(function(r){ return r.json(); })
-					.then(function(res){
-						if (!res || !res.success) { alert('Failed to load student'); return; }
-						var student = res.student || {};
-						var tpl = document.getElementById('tmpl-edit-student');
-						if (!tpl) { alert('Edit template missing'); return; }
-						var clone = tpl.content.firstElementChild.cloneNode(true);
-						var modalEl = insertModal(clone);
-						if (!modalEl) return;
-						var qs = function(sel){ return modalEl.querySelector(sel); };
-						if (qs('#editStudentId')) qs('#editStudentId').value = student.id || '';
-						if (qs('#editFirstName')) qs('#editFirstName').value = student.first_name || '';
-						if (qs('#editLastName')) qs('#editLastName').value = student.last_name || '';
-						if (qs('#editGrade')) qs('#editGrade').value = student.grade || '';
-						if (qs('#editDateOfBirth')) qs('#editDateOfBirth').value = student.date_of_birth || '';
-						if (qs('#editGender')) qs('#editGender').value = student.gender || '';
-						if (qs('#editPrimaryLanguage')) qs('#editPrimaryLanguage').value = student.primary_language || '';
-						if (qs('#editServiceFrequency')) qs('#editServiceFrequency').value = student.service_frequency || '';
-						if (qs('#editParentContact')) qs('#editParentContact').value = student.parent_contact || '';
-						if (qs('#editMedicalInfo')) qs('#editMedicalInfo').value = student.medical_info || '';
-						if (qs('#displayStudentId')) qs('#displayStudentId').textContent = student.student_id || student.id || '';
 
-						var form = qs('#editStudentForm');
-						if (form) {
-							form.addEventListener('submit', function(e){
-								e.preventDefault();
-								var fdata = new FormData(form);
-								fdata.append('action','update_student');
-								fetch('/includes/submit.php', { method: 'POST', body: fdata })
-								.then(function(r){ return r.text(); })
-								.then(function(txt){
-									var out = null;
-									try { out = txt ? JSON.parse(txt) : null; } catch (e){ console.error('update parse', e, txt); alert('Server error'); return; }
-									if (out && out.success) {
-										// close modal and refresh
-										if (typeof closeModal === 'function') closeModal();
-										setTimeout(function(){ location.reload(); }, 200);
-									} else {
-										alert((out && out.error) ? out.error : 'Failed to update');
-									}
-								}).catch(function(err){ console.error(err); alert('Network error'); });
-							}, { once: true });
-						}
-					}).catch(function(err){ console.error(err); alert('Failed to load student'); });
-				} catch (e) { console.error(e); }
-			};
-		})();
-		</script>
     
 	<div class="students-by-grade">
 		<?php if (empty($user_students)): ?>

@@ -17,7 +17,12 @@ function openModal(el) {
 // compatibility helper expected by some modules: insert a modal element into the DOM
 function insertModal(node) {
 	// Remove any existing modal/backdrop to avoid stacked overlays
-	document.querySelectorAll('.modal, .modal-backdrop').forEach(el => el.remove());
+	document.querySelectorAll('.modal, .modal-backdrop').forEach(el => {
+		// Only remove elements we previously inserted via this helper
+		if (el.classList.contains('modal-backdrop') || el.dataset.slpOwned === '1') {
+			el.remove();
+		}
+	});
 
 	// Resolve modal element from fragment or element
 	let modalEl = null;
@@ -47,6 +52,9 @@ function insertModal(node) {
 	}
 
 	// (no id namespacing here) Keep original ids so existing modal-scoped selectors continue to work.
+
+	// Mark this modal as owned by the helper so we can safely clean it up later without touching page-defined modals
+	try { if (modalEl) modalEl.dataset.slpOwned = '1'; } catch (e) { /* ignore */ }
 
 	// Prevent body layout shift by locking scroll and compensating for scrollbar width if present
 	const _body = document.body;
@@ -162,8 +170,12 @@ function insertModal(node) {
 }
 
 function closeModal(modalEl) {
-	// Remove modal and backdrop
-	document.querySelectorAll('.modal, .modal-backdrop').forEach(el => el.remove());
+	// Remove modal and backdrop — only the ones we own
+	document.querySelectorAll('.modal, .modal-backdrop').forEach(el => {
+		if (el.classList.contains('modal-backdrop') || el.dataset.slpOwned === '1') {
+			el.remove();
+		}
+	});
 	// Remove escape handler
 	if (__slp_lastEsc) {
 		document.removeEventListener('keydown', __slp_lastEsc);

@@ -17,13 +17,19 @@ if (empty($user_students)) {
                 $pdo = get_db();
                 $pi = $pdo->prepare("PRAGMA table_info('students')"); $pi->execute();
                 $cols = array_column($pi->fetchAll(PDO::FETCH_ASSOC), 'name');
-                if (in_array('assigned_therapist', $cols)) {
-                    $stmt = $pdo->prepare('SELECT * FROM students WHERE assigned_therapist = :uid');
-                    $stmt->execute([':uid' => $_SESSION['user_id'] ?? null]);
+                $uid = $_SESSION['user_id'] ?? null;
+                // try strict ownership first
+                if (in_array('user_id', $cols) && $uid) {
+                    $stmt = $pdo->prepare('SELECT * FROM students WHERE user_id = :uid AND (archived = 0 OR archived IS NULL) ORDER BY last_name, first_name');
+                    $stmt->execute([':uid' => $uid]);
+                    $user_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                } elseif (in_array('assigned_therapist', $cols) && $uid) {
+                    $stmt = $pdo->prepare('SELECT * FROM students WHERE assigned_therapist = :uid AND (archived = 0 OR archived IS NULL) ORDER BY last_name, first_name');
+                    $stmt->execute([':uid' => $uid]);
                     $user_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 } else {
-                    $stmt = $pdo->query('SELECT * FROM students WHERE archived = 0');
-                    $user_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                    // fallback: show none to non-admins to avoid leakage; index.php provides $user_students for admins
+                    $user_students = [];
                 }
             }
         }
@@ -53,10 +59,10 @@ $student_progress = [];
     <div class="progress-toolbar">
             <div class="toolbar-left toolbar-left-stacked">
                 <?php // place primary action inside the toolbar so it remains aligned with toolbar/skills area ?>
-                <button id="addProgressBtn" class="btn btn-primary primary-action-left" <?php echo $preIdAttr; ?> <?php echo $disabledAttr; ?>>Start new Progress Report</button>
+                <button id="addProgressBtn" class="btn btn-primary primary-action-left" <?php echo $preIdAttr; ?> <?php echo $disabledAttr; ?>>Add Skill</button>
                 <div class="toolbar-select-wrap">
                     <label for="progressStudentSelect">Select Student:</label>
-                    <select id="progressStudentSelect" onchange="handleProgressSelectChange(this.value);">
+                    <select id="progressStudentSelect">
                         <option value="">-- Select a student --</option>
                     <?php foreach ($user_students as $student): ?>
                         <option value="<?php echo $student['id']; ?>" <?php echo (isset($selected_student['id']) && $selected_student['id']==$student['id']) ? 'selected' : ''; ?>><?php echo htmlspecialchars($student['first_name'] . ' ' . $student['last_name']) . ' - ' . htmlspecialchars($student['student_id'] ?? $student['id']); ?></option>
@@ -69,134 +75,7 @@ $student_progress = [];
                 <button class="btn btn-outline btn-danger" id="deleteReport" <?php echo $disabledAttr; ?> style="margin-left:8px;">Delete Report</button>
             </div>
     </div>
-<script>
-document.addEventListener('DOMContentLoaded', function(){
-    const btn = document.getElementById('addProgressBtn');
-    const select = document.getElementById('progressStudentSelect');
-    // Leave any server-rendered report title in place; client will update it when needed.
-    const getSidFromUrl = () => {
-        try { const p = new URLSearchParams(window.location.search); return p.get('student_id') || p.get('id') || ''; } catch (e) { return ''; }
-    };
 
-    // Determine selected student id from select dropdown first, then button data attribute, then URL param
-    let sid = '';
-    if (select && select.value) sid = select.value || '';
-    if ((!sid || sid === '') && btn) sid = btn.getAttribute('data-student-id') || '';
-    if ((!sid || sid === '') ) sid = getSidFromUrl() || '';
-
-    if (sid && typeof window.initializeProgress === 'function') {
-        try { window.initializeProgress(Number(sid)); } catch(e) { console.error(e); }
-    }
-
-    // Set the client-visible student name into the reserved element if a
-    // selection already exists. The CSS reserves the vertical space so this
-    // will not cause layout shifts when the name appears.
-    try {
-        const nameElInit = document.getElementById('progressStudentName');
-        const selInit = document.getElementById('progressStudentSelect');
-        if (nameElInit) {
-            if (selInit && selInit.value) {
-                const opt = selInit.options[selInit.selectedIndex];
-                const txt = opt ? (opt.textContent || '') : '';
-                nameElInit.textContent = txt ? txt.split(' - ')[0] : '\u00A0';
-            } else {
-                // keep a non-breaking space so the reserved element remains present
-                nameElInit.textContent = '\u00A0';
-            }
-        }
-    } catch (e) { /* ignore */ }
-
-    if (btn) {
-            btn.addEventListener('click', function(){
-            // Prefer current dropdown value first when opening Add Skill modal
-            let sid2 = (select && select.value) ? select.value : (this.getAttribute('data-student-id') || '');
-            if ((!sid2 || sid2 === '') ) sid2 = getSidFromUrl() || '';
-            if (!sid2) { alert('Select a student first'); return; }
-            const ev = new CustomEvent('openAddSkill', { detail: { student_id: Number(sid2) } });
-            document.dispatchEvent(ev);
-        });
-    }
-
-        // Prevent full-page navigations triggered by the select. This handler
-        // will update the URL and call initializeProgress() so there is no server
-        // default page flash while switching students.
-        window.handleProgressSelectChange = function(val) {
-            try {
-                const sel = document.getElementById('progressStudentSelect');
-                const studentId = (typeof val !== 'undefined' && val !== null) ? String(val) : (sel ? sel.value : '');
-                // If empty selection, clear the progress area and update URL
-                const newUrl = '?view=progress' + (studentId ? ('&student_id=' + encodeURIComponent(studentId)) : '');
-                try { history.pushState({}, '', newUrl); } catch (e) { /* ignore */ }
-
-                if (!studentId) {
-                    // Show server placeholder and clear any lingering report title
-                    const overview = document.querySelector('.progress-overview');
-                    if (overview) try { overview.remove(); } catch (e) { overview.style.display = 'none'; }
-                    // reserved student-name element intentionally left empty to avoid layout shifts
-                    try { const nameEl = document.getElementById('progressStudentName'); if (nameEl) nameEl.textContent = '\u00A0'; } catch (e) {}
-                    // Remove progress report title element if present
-                    try { const titleEl = document.getElementById('progressReportTitle'); if (titleEl) titleEl.remove(); } catch (e) {}
-                    // Hide any progress-related sections and show the no-student placeholder
-                    try { document.querySelectorAll('.no-progress, .progress-stats, .progress-chart-container, .progress-history, .skills-list').forEach(el => { if (el) el.style.display = 'none'; }); } catch(e) {}
-                    // Reset toolbar button states/text so UI reflects no student selected
-                    try {
-                        const addBtn = document.getElementById('addProgressBtn');
-                        if (addBtn) {
-                            addBtn.disabled = true;
-                            addBtn.classList.add('btn-disabled');
-                            addBtn.textContent = 'Create Progress Report';
-                            try { addBtn.removeAttribute('data-student-id'); } catch(e) {}
-                        }
-                        const createBtn = document.getElementById('createReport'); if (createBtn) { createBtn.disabled = true; createBtn.classList.add('btn-disabled'); }
-                        const delBtn = document.getElementById('deleteReport'); if (delBtn) { delBtn.disabled = true; delBtn.classList.add('btn-disabled'); }
-                    } catch (e) { /* ignore toolbar reset errors */ }
-                    const noSel = document.querySelector('.no-student-selected'); if (noSel) try { noSel.style.display = 'block'; } catch(e){}
-                    return;
-                }
-
-                // Hide server placeholder if present
-                const noSel = document.querySelector('.no-student-selected'); if (noSel) try { noSel.style.display = 'none'; } catch(e){}
-
-                // When a studentId is selected, write the student's name into the
-                // reserved element. CSS prevents this from causing layout shifts.
-                try {
-                    const nameEl = document.getElementById('progressStudentName');
-                    const selEl = document.getElementById('progressStudentSelect');
-                    if (nameEl) {
-                        if (studentId && selEl) {
-                            const option = selEl.options[selEl.selectedIndex];
-                            const txt = option ? (option.textContent || '') : '';
-                            nameEl.textContent = txt ? txt.split(' - ')[0] : '\u00A0';
-                        } else {
-                            // set a non-breaking space instead of empty string
-                            nameEl.textContent = '\u00A0';
-                        }
-                    }
-                } catch (e) { /* ignore */ }
-
-                // Ensure progress-overview exists so initializeProgress can render into it.
-                // Insert it after the progress toolbar so the toolbar/search controls remain above the skills.
-                let overview = document.querySelector('.progress-overview');
-                if (!overview) {
-                    overview = document.createElement('div'); overview.className = 'progress-overview';
-                    const toolbar = document.querySelector('.progress-toolbar');
-                    if (toolbar && toolbar.parentNode) toolbar.parentNode.insertBefore(overview, toolbar.nextSibling);
-                    else {
-                        // fallback: after page header, then container append
-                        const header = document.querySelector('.page-header');
-                        if (header && header.parentNode) header.parentNode.insertBefore(overview, header.nextSibling);
-                        else document.querySelector('.container')?.appendChild(overview);
-                    }
-                }
-
-                // Call existing initialization to fetch and render skills in-place
-                if (typeof window.initializeProgress === 'function') {
-                    try { window.initializeProgress(Number(studentId)); } catch (e) { console.error('initializeProgress failed', e); }
-                }
-            } catch (err) { console.error('handleProgressSelectChange error', err); }
-        };
-});
-</script>
 
 <?php if (!$selected_student): ?>
     <div class="no-student-selected">

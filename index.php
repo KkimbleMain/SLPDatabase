@@ -51,28 +51,30 @@ require_once __DIR__ . '/includes/sqlite.php';
 $user_data = findRecord('users', 'id', $user_id);
 if (!is_array($user_data)) $user_data = [];
 
-// Determine if current user is admin for template/DB queries
-$isAdmin = isset($user_data['role']) && $user_data['role'] === 'admin';
+// All users have the same privileges; admin concept removed
 
-// Load students assigned to this user from the DB (preferred). If assigned_therapist column is not present
-// or query fails, fall back to returning all active students.
+// Load students owned by this user (preferred via students.user_id). If user_id column is not present
+// but legacy assigned_therapist exists, use that. Otherwise, return none to avoid leakage.
 $user_students = [];
 $total_students = 0;
 $total_goals = 0;
 try {
     $pdo = get_db();
     // Check if assigned_therapist column exists
-    $pi = $pdo->prepare("PRAGMA table_info('students')");
-    $pi->execute();
+    $pi = $pdo->prepare("PRAGMA table_info('students')"); $pi->execute();
     $cols = array_column($pi->fetchAll(PDO::FETCH_ASSOC), 'name');
-    if (in_array('assigned_therapist', $cols)) {
+    if (in_array('user_id', $cols)) {
+        // strict ownership: only show this user's non-archived students
+        $stmt = $pdo->prepare('SELECT * FROM students WHERE user_id = :uid AND archived = 0 ORDER BY last_name, first_name');
+        $stmt->execute([':uid' => $user_id]);
+        $user_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } elseif (in_array('assigned_therapist', $cols)) {
         $stmt = $pdo->prepare('SELECT * FROM students WHERE assigned_therapist = :uid AND archived = 0 ORDER BY last_name, first_name');
         $stmt->execute([':uid' => $user_id]);
         $user_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
     } else {
-        // fallback: return all non-archived students
-        $stmt = $pdo->query('SELECT * FROM students WHERE archived = 0 ORDER BY last_name, first_name');
-        $user_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        // fallback: no ownership column; return none to avoid leakage
+        $user_students = [];
     }
 
     $total_students = is_array($user_students) ? count($user_students) : 0;
@@ -81,28 +83,40 @@ try {
     $pi = $pdo->prepare("PRAGMA table_info('goals')");
     $pi->execute();
     $gcols = array_column($pi->fetchAll(PDO::FETCH_ASSOC), 'name');
-    if (!empty($gcols) && in_array('therapist_id', $gcols)) {
-        $stmt = $pdo->prepare('SELECT COUNT(*) FROM goals WHERE therapist_id = :uid');
-        $stmt->execute([':uid' => $user_id]);
-        $total_goals = (int)$stmt->fetchColumn();
+    if (!empty($gcols)) {
+        if (in_array('user_id', $gcols)) {
+            $stmt = $pdo->prepare('SELECT COUNT(*) FROM goals WHERE user_id = :uid');
+            $stmt->execute([':uid' => $user_id]);
+            $total_goals = (int)$stmt->fetchColumn();
+        } elseif (in_array('therapist_id', $gcols)) {
+            $stmt = $pdo->prepare('SELECT COUNT(*) FROM goals WHERE therapist_id = :uid');
+            $stmt->execute([':uid' => $user_id]);
+            $total_goals = (int)$stmt->fetchColumn();
+        } else {
+            // filter by owned students if possible
+            $studentIds = array_column($user_students, 'id');
+            if (!empty($studentIds)) {
+                $ph = implode(',', array_fill(0, count($studentIds), '?'));
+                $stmt = $pdo->prepare("SELECT COUNT(*) FROM goals WHERE student_id IN ({$ph})");
+                $stmt->execute($studentIds);
+                $total_goals = (int)$stmt->fetchColumn();
+            } else {
+                $total_goals = 0;
+            }
+        }
     } else {
         $total_goals = 0;
     }
     // Load goals list for templates (used by students.php)
     try {
-        if ($isAdmin) {
-            $stmt = $pdo->query('SELECT * FROM goals ORDER BY created_at DESC');
+        $studentIds = array_column($user_students, 'id');
+        if (!empty($studentIds)) {
+            $placeholders = implode(',', array_fill(0, count($studentIds), '?'));
+            $stmt = $pdo->prepare("SELECT * FROM goals WHERE student_id IN ({$placeholders}) ORDER BY created_at DESC");
+            $stmt->execute($studentIds);
             $goals = $stmt->fetchAll(PDO::FETCH_ASSOC);
         } else {
-            $studentIds = array_column($user_students, 'id');
-            if (!empty($studentIds)) {
-                $placeholders = implode(',', array_fill(0, count($studentIds), '?'));
-                $stmt = $pdo->prepare("SELECT * FROM goals WHERE student_id IN ({$placeholders}) ORDER BY created_at DESC");
-                $stmt->execute($studentIds);
-                $goals = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            } else {
-                $goals = [];
-            }
+            $goals = [];
         }
     } catch (Throwable $e) {
         $goals = [];
@@ -236,6 +250,10 @@ $student_progress = $student_progress ?? [];
     <?php include_once __DIR__ . '/templates/modal_templates.php'; ?>
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <script type="module" src="/assets/js/main.js"></script>
+    <script>
+        // Expose server-side reporting gate to the client for conditional UI/behaviors
+        window.SLP_ALLOW_REPORTS = <?php echo (defined('ALLOW_REPORTS') && ALLOW_REPORTS === true) ? 'true' : 'false'; ?>;
+    </script>
     <script type="module">
         // Dynamically import a page-specific module if it exists under /assets/js/pages/{view}.js
         (async () => {

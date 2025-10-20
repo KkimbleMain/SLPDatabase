@@ -71,6 +71,72 @@ async function fetchLatestProgressReport(studentId) {
     return await apiFetch('/includes/submit.php', { method: 'POST', body: fd.toString(), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
 }
 
+// Ensure a student report exists without prompting the user; create one with a default
+// title if missing. Returns { report, created }.
+async function ensureReportExistsSilently(studentId) {
+    try {
+        const toolbar = document.querySelector('.progress-toolbar');
+        const allowReports = (() => {
+            try {
+                if (!toolbar) return true;
+                const v = toolbar.getAttribute('data-allow-reports');
+                if (v === null) return true;
+                return v === '1';
+            } catch (e) { return true; }
+        })();
+        if (!allowReports) return { report: null, created: false };
+
+        // Check existing report first
+        let rep = null;
+        try {
+            const existing = await fetchStudentReport(studentId);
+            if (existing && existing.success && existing.report) {
+                rep = existing.report;
+                return { report: rep, created: false };
+            }
+        } catch (e) { /* ignore */ }
+
+        // Determine a default title using DOM or a lightweight fetch
+        let studentName = '';
+        try {
+            const hdr = document.querySelector('.progress-overview') || document.querySelector('.page-header') || document.querySelector('.container');
+            if (hdr) {
+                const nameEl = hdr.querySelector('h3') || hdr.querySelector('.student-name') || document.getElementById('progressStudentName');
+                if (nameEl) studentName = (nameEl.textContent || '').trim();
+            }
+        } catch (e) { /* ignore */ }
+        if (!studentName) {
+            try {
+                const fd = new URLSearchParams(); fd.append('action','get_student'); fd.append('id', String(studentId));
+                const resp = await apiFetch('/includes/submit.php', { method: 'POST', body: fd.toString(), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+                if (resp && resp.success && resp.student) studentName = ((resp.student.first_name || '') + ' ' + (resp.student.last_name || '')).trim();
+            } catch (e) { /* ignore */ }
+        }
+        const defaultTitle = 'Progress Report' + (studentName ? ' - ' + studentName : '');
+
+        // Create the report without prompting
+        const fd = new URLSearchParams(); fd.append('action','create_progress_report'); fd.append('student_id', String(studentId)); fd.append('title', defaultTitle);
+        const res = await apiFetch('/includes/submit.php', { method: 'POST', body: fd.toString(), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+        if (res && res.success) {
+            // Fetch canonical latest row, update UI, and return
+            try {
+                const latest = await fetchLatestProgressReport(studentId);
+                if (latest && latest.success && latest.report) {
+                    try { updateReportUIState(latest.report, studentId); } catch (e) { /* ignore */ }
+                    try { if (typeof initializeProgress === 'function') await initializeProgress(studentId); } catch (e) { /* ignore */ }
+                    try { if (typeof window.refreshRecentActivity === 'function') window.refreshRecentActivity(20); } catch (e) { /* ignore */ }
+                    return { report: latest.report, created: true };
+                }
+            } catch (e) { /* ignore */ }
+            try { updateReportUIState(res.report || null, studentId); } catch (e) { /* ignore */ }
+            return { report: res.report || null, created: true };
+        }
+        return { report: null, created: false };
+    } catch (err) {
+        return { report: null, created: false };
+    }
+}
+
 // Re-fetch updates for every visible skill card and update its UI/chart
 async function refreshAllSkillData(studentId) {
     const section = document.querySelector('.skills-list');
@@ -163,6 +229,15 @@ export async function initializeProgress(studentId) {
     if (!studentId) return;
     const container = document.querySelector('.progress-overview') || document.querySelector('.container');
     if (!container) return;
+    const toolbar = document.querySelector('.progress-toolbar');
+    const allowReports = (() => {
+        try {
+            if (!toolbar) return true;
+            const v = toolbar.getAttribute('data-allow-reports');
+            if (v === null) return true; // attribute missing -> treat as enabled
+            return v === '1';
+        } catch (e) { return true; }
+    })();
     // load skills and render cards into a detached container to avoid visual flash
     try {
         const r = await fetchSkills(studentId);
@@ -200,7 +275,7 @@ export async function initializeProgress(studentId) {
 
         // After rendering, update UI state and wire toolbar actions (generate/close/delete/print)
         try {
-            // fetch existing report metadata (if any) and update UI
+            // fetch existing report metadata (if any) and update UI; consider both progress_reports and legacy student_reports
             let rep = null;
             try {
                 // Prefer progress_reports (new table) via get_latest_progress_report
@@ -210,7 +285,18 @@ export async function initializeProgress(studentId) {
                 } catch (e) { /* ignore */ }
                 // Fallback to legacy student_reports if no progress_reports row found
                 if (!rep) {
-                    try { const repResp = await fetchStudentReport(studentId); if (repResp && repResp.success) rep = repResp.report; } catch(e) { /* ignore */ }
+                    try {
+                        const repResp = await fetchStudentReport(studentId);
+                        if (repResp && repResp.success && (repResp.report || repResp.html)) {
+                            // synthesize minimal report object so UI treats it as present
+                            rep = {
+                                id: null,
+                                student_id: studentId,
+                                title: repResp.title || 'Progress Report',
+                                created_at: null
+                            };
+                        }
+                    } catch(e) { /* ignore */ }
                 }
             } catch (e) { /* ignore overall */ }
             updateReportUIState(rep, studentId);
@@ -242,10 +328,21 @@ export async function initializeProgress(studentId) {
                 return lastMap;
             };
 
-            // Generate/Overwrite report (Create or Update)
+            // Generate/Printable preview (client-side only)
             const createBtn = document.getElementById('createReport');
             if (createBtn) createBtn.addEventListener('click', async () => {
                 try {
+                    // If no report exists for this student, prompt to create one first
+                    let hasReport = false;
+                    try {
+                        const latest = await fetchLatestProgressReport(studentId);
+                        hasReport = !!(latest && latest.success && latest.report);
+                    } catch (e) { /* ignore */ }
+                    if (!hasReport) {
+                        const created = await ensureStudentReportExists(studentId);
+                        // After creating, return; next click will open preview
+                        return;
+                    }
                     // Build printable HTML locally: only include skills, charts, and history (no profile or documents)
                     showNotification('Preparing printable preview...', 'info');
                     const title = document.getElementById('progressReportTitle') ? document.getElementById('progressReportTitle').textContent : ('Progress Report');
@@ -477,11 +574,29 @@ export async function initializeProgress(studentId) {
 // Ensure a student report exists; create one if missing.
 // Returns an object: { report: {...} | null, created: true|false }
 async function ensureStudentReportExists(studentId) {
+    // If server-side progress report management is disabled, skip creation
+    try {
+        const toolbar = document.querySelector('.progress-toolbar');
+        const allowReports = (() => {
+            try {
+                if (!toolbar) return true;
+                const v = toolbar.getAttribute('data-allow-reports');
+                if (v === null) return true;
+                return v === '1';
+            } catch (e) { return true; }
+        })();
+        if (!allowReports) {
+            return { report: null, created: false };
+        }
+    } catch (e) { /* ignore */ }
     try {
         console.debug('[progress] ensureStudentReportExists: fetching report for student', studentId);
         const rep = await fetchStudentReport(studentId);
         console.debug('[progress] fetchStudentReport response', rep);
-        if (rep && rep.success && rep.report) return { report: rep.report, created: false };
+        if (rep && rep.success && (rep.report || rep.html)) {
+            // Return a synthesized report marker so callers treat it as present
+            return { report: { id: null, student_id: studentId, title: rep.title || 'Progress Report' }, created: false };
+        }
         // Prompt the user for a report title and create a new progress_report row
         console.debug('[progress] ensureStudentReportExists: prompting for title and creating progress report for student', studentId);
         // Try to determine the student's name from DOM first for a faster default title
@@ -565,6 +680,15 @@ async function ensureStudentReportExists(studentId) {
 // Update UI to reflect report existence/metadata
 function updateReportUIState(report, studentId) {
     try {
+        const toolbar = document.querySelector('.progress-toolbar');
+        const allowReports = (() => {
+            try {
+                if (!toolbar) return true;
+                const v = toolbar.getAttribute('data-allow-reports');
+                if (v === null) return true;
+                return v === '1';
+            } catch (e) { return true; }
+        })();
         const addBtn = document.getElementById('addProgressBtn');
         const container = document.querySelector('.progress-overview') || document.querySelector('.container');
         const section = container ? container.querySelector('.skills-list') : null;
@@ -586,22 +710,31 @@ function updateReportUIState(report, studentId) {
     const createBtn = document.getElementById('createReport');
     const delBtn = document.getElementById('deleteReport');
 
-        // If a report exists, treat it as active: enable Add Skill, Generate PDF and Delete.
-        // If no report exists, show the 'no report' banner and disable add-skill actions.
-        if (report) {
+        // If server-side report management is disabled, do not require an active report.
+        if (!allowReports) {
             if (addBtn) { addBtn.disabled = false; addBtn.classList.remove('btn-disabled'); addBtn.textContent = 'Add Skill'; }
             if (section) section.querySelectorAll('.add-skill-card').forEach(c => c.classList.remove('disabled'));
             else document.querySelectorAll('.add-skill-card').forEach(c => c.classList.remove('disabled'));
             if (banner) banner.style.display = 'none';
-            if (createBtn) { createBtn.disabled = false; createBtn.classList.remove('btn-disabled'); createBtn.textContent = 'Generate PDF'; }
+            const createBtn = document.getElementById('createReport'); if (createBtn) { createBtn.disabled = false; createBtn.classList.remove('btn-disabled'); createBtn.textContent = 'Generate Printable'; }
+            const delBtn = document.getElementById('deleteReport'); if (delBtn) { delBtn.disabled = true; delBtn.classList.add('btn-disabled'); }
+        }
+        // If a report exists, treat it as active: enable Add Skill, Generate PDF and Delete.
+        // If no report exists, show the 'no report' banner and disable add-skill actions.
+        else if (report) {
+            if (addBtn) { addBtn.disabled = false; addBtn.classList.remove('btn-disabled'); addBtn.textContent = 'Add Skill'; }
+            if (section) section.querySelectorAll('.add-skill-card').forEach(c => c.classList.remove('disabled'));
+            else document.querySelectorAll('.add-skill-card').forEach(c => c.classList.remove('disabled'));
+            if (banner) banner.style.display = 'none';
+            if (createBtn) { createBtn.disabled = false; createBtn.classList.remove('btn-disabled'); createBtn.textContent = 'Generate Printable'; }
             if (delBtn) { delBtn.disabled = false; delBtn.classList.remove('btn-disabled'); }
         } else {
+            // Require an active report before adding skills
             if (addBtn) { addBtn.disabled = false; addBtn.classList.remove('btn-disabled'); addBtn.textContent = 'Create Progress Report'; }
-            // disable add-skill-cards so user cannot add skills until a report is initialized
             if (section) section.querySelectorAll('.add-skill-card').forEach(c => c.classList.add('disabled'));
             else document.querySelectorAll('.add-skill-card').forEach(c => c.classList.add('disabled'));
             if (banner) { banner.textContent = 'No progress report exists yet for this student. Create a progress report to enable adding skills.'; banner.style.display = 'block'; }
-            if (createBtn) { createBtn.disabled = false; createBtn.classList.remove('btn-disabled'); createBtn.textContent = 'Generate PDF'; }
+            if (createBtn) { createBtn.disabled = false; createBtn.classList.remove('btn-disabled'); createBtn.textContent = 'Generate Printable'; }
             if (delBtn) { delBtn.disabled = true; delBtn.classList.add('btn-disabled'); }
         }
         // Manage the progress report title element: show above skills when a report exists,
@@ -710,14 +843,30 @@ function renderSkills(skills, studentId, container) {
     addCard.innerHTML = `<div class="add-skill">+ Add Skill</div>`;
     addCard.addEventListener('click', async () => {
         const addBtn = document.getElementById('addProgressBtn');
+        const toolbar = document.querySelector('.progress-toolbar');
+        const allowReports = (() => {
+            try {
+                if (!toolbar) return true;
+                const v = toolbar.getAttribute('data-allow-reports');
+                if (v === null) return true;
+                return v === '1';
+            } catch (e) { return true; }
+        })();
+        // If add button disabled or card marked disabled, enforce gating
         if ((addBtn && addBtn.disabled) || addCard.classList.contains('disabled')) {
+            // If reports are disabled globally, allow adding skills without a report
+            if (!allowReports) { showAddSkillModal(studentId); return; }
             showNotification('Create a progress report first to add skills','info');
             return;
         }
         try {
-            const createdRes = await ensureStudentReportExists(studentId);
-            const createdFlag = createdRes && createdRes.created ? true : false;
-            showAddSkillModal(studentId, { created: createdFlag });
+            if (!allowReports) {
+                showAddSkillModal(studentId);
+            } else {
+                const createdRes = await ensureStudentReportExists(studentId);
+                const createdFlag = createdRes && createdRes.created ? true : false;
+                showAddSkillModal(studentId, { created: createdFlag });
+            }
         } catch (err) {
             showAddSkillModal(studentId);
         }
@@ -800,31 +949,30 @@ function showAddSkillModal(studentId, options = {}) {
     // Helpers to select within modal by original id
     const q = (origId) => modal.querySelector('#' + origId + '-' + uid);
 
-    // If this modal is being shown immediately after creating a new report,
-    // adjust the title and show a short explanation so teachers understand
-    // they're initializing a student's progress report (not just adding a standalone skill).
-    try {
-        if (options && options.created) {
-            const hdr = modal.querySelector('.modal-header h2') || modal.querySelector('.modal-title');
-            if (hdr) hdr.textContent = 'Initialize Progress Report — Add first skill';
-            // insert a short explanatory paragraph under the header if not present
-            let expl = modal.querySelector('.report-init-explainer');
-            if (!expl) {
-                expl = document.createElement('div');
-                expl.className = 'report-init-explainer muted';
-                expl.style.margin = '8px 0 12px';
-                expl.textContent = 'You just created a new progress report for this student. Add the first skill and set its current and target percentages to begin tracking progress.';
-                const headerEl = modal.querySelector('.modal-header');
-                if (headerEl && headerEl.parentNode) headerEl.parentNode.insertBefore(expl, headerEl.nextSibling);
-            }
-        }
-    } catch (err) { /* non-critical */ }
+    // Simplified UX: treat first-skill and subsequent skills the same (no special header/explainer)
 
     // wire submit/cancel
     const submitBtn = modal.querySelector('.modal-actions .btn.btn-primary');
     const cancelBtn = modal.querySelector('.modal-actions .btn.btn-secondary');
     if (cancelBtn) cancelBtn.addEventListener('click', () => { try { window.closeModal(); } catch(e) { modal.remove(); } });
+    // require category and label before enabling submit
+    const catSel = q('skillCategory');
+    const labelInput = q('skillLabel');
+    const validateAddSkill = () => {
+        const hasCat = !!(catSel && catSel.value && catSel.value.trim() !== '');
+        const hasLabel = !!(labelInput && labelInput.value && labelInput.value.trim() !== '');
+        if (submitBtn) submitBtn.disabled = !(hasCat && hasLabel);
+        return hasCat && hasLabel;
+    };
+    try {
+        if (catSel) catSel.addEventListener('change', validateAddSkill);
+        if (labelInput) labelInput.addEventListener('input', validateAddSkill);
+        validateAddSkill();
+    } catch (e) { /* ignore */ }
+
     if (submitBtn) submitBtn.addEventListener('click', async () => {
+            // enforce category and name
+            if (!validateAddSkill()) { showNotification('Please select a category and enter a skill label','error'); return; }
             try {
                 console.log('Add Skill submit clicked (handler start)');
                 const labelEl = q('skillLabel');
@@ -1247,6 +1395,11 @@ function escapeHtml(str) {
 
 // Expose init function
 if (typeof window.initializeProgress !== 'function') window.initializeProgress = initializeProgress;
+// Expose for other modules (e.g., main.js) to use the silent ensure
+if (!window.progressModule) window.progressModule = {};
+window.progressModule.ensureReportExistsSilently = ensureReportExistsSilently;
+// Also expose the title-prompted flow so other modules can trigger report creation explicitly
+window.progressModule.ensureStudentReportExists = ensureStudentReportExists;
 export default { initializeProgress };
 
 // Listen for custom event to open add-skill modal
@@ -1258,6 +1411,8 @@ document.addEventListener('openAddSkill', function(e){
         (async () => {
             try {
                 const createdRes = await ensureStudentReportExists(sid);
+                // Only show the "Initialize Progress Report" explainer when we actually created a new report now.
+                // Legacy or existing reports should open the normal Add Skill modal.
                 const createdFlag = createdRes && createdRes.created ? true : false;
                 showAddSkillModal(sid, { created: createdFlag });
             } catch (err) { try { showAddSkillModal(sid); } catch(e) { /* ignore */ } }

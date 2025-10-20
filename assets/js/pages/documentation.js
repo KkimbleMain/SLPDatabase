@@ -28,20 +28,6 @@ if (typeof window.showNotification !== 'function') {
             studentSelect.value = preSelectedId;
             await loadStudentForms();
         }
-
-    // Expose a small set of functions to window for inline onclicks and dynamically generated HTML
-    // These are used by templates and existing-form markup which rely on global functions.
-    window.showDocModal = showDocModal;
-    window.viewExistingForm = viewExistingForm;
-    window.deleteExistingForm = deleteExistingForm;
-    window.editExistingForm = editExistingForm;
-    window.saveDocument = saveDocument;
-    window.printDocument = printDocument;
-    // Expose handlers used by select onchange attributes in the page template
-    window.loadStudentForms = loadStudentForms;
-    window.filterExistingForms = filterExistingForms;
-    // Expose modal close helper for inline close button
-    window.closeDocModal = closeDocModal;
     } catch (err) {
         console.error('Documentation init error:', err);
     }
@@ -158,16 +144,20 @@ function displayExistingForms(forms) {
     
     const html = forms.map(form => {
     const ft = form.form_type || (form.formType || '');
-    const formTypeName = formTypeNames[ft] || ft || 'Document';
+    // Prefer table name for UID prefix to avoid collisions across tables; fall back to form_type
+    const tableHint = (form.table || '').toString().trim();
+    const uidPrefix = tableHint !== '' ? tableHint : (ft || 'unknown');
+    const displayType = ft || (tableHint === 'other_documents' ? 'uploaded_file' : ft);
+    const formTypeName = formTypeNames[displayType] || displayType || 'Document';
     const createdDate = form.created_at ? new Date(form.created_at).toLocaleDateString() : '';
-    // Compose a stable UID including form_type to avoid id collisions across DB tables
+    // Compose a stable UID including source (table or type) to avoid id collisions across DB tables
     const rawId = form.db_id || form.id;
-    const rowUid = (ft ? ft : 'unknown') + '::' + String(rawId);
+    const rowUid = uidPrefix + '::' + String(rawId);
     const deleteBtn = `<button class="btn btn-sm btn-danger" onclick="deleteExistingForm('${rowUid}')">Delete</button>`;
     const entryTitle = (form.title && String(form.title).trim() !== '') ? form.title : (form.title || formTypeName);
         
         return `
-            <div class="existing-form-item">
+            <div class="existing-form-item" data-uid="${rowUid}">
                 <div class="existing-form-info">
                     <div class="existing-form-title">${entryTitle}</div>
                     <div class="existing-form-meta">${formTypeName} — Created: ${createdDate}</div>
@@ -224,9 +214,48 @@ function setupDocumentationPage() {
 
 // Function to show documentation modal (existing functionality)
 function showDocModal(formType) {
-    const modal = document.getElementById('documentationModal');
-    const title = document.getElementById('docModalTitle');
-    const form = document.getElementById('docModalForm');
+    let modal = document.getElementById('documentationModal');
+    let title = document.getElementById('docModalTitle');
+    let form = document.getElementById('docModalForm');
+    // If the modal skeleton is missing (user navigated here from another page or markup was altered), inject it.
+    if (!modal || !title || !form) {
+        console.warn('Documentation modal elements missing; injecting fallback skeleton. Present flags:', { modal: !!modal, title: !!title, form: !!form });
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = `
+            <div id="documentationModal" class="modal" style="display: none;">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h2 id="docModalTitle">Documentation Form</h2>
+                        <span class="close" aria-label="Close">&times;</span>
+                    </div>
+                    <div class="modal-form">
+                        <div id="docModalForm"></div>
+                        <div class="modal-actions">
+                            <button type="button" class="btn btn-outline" id="docCancelBtn">Cancel</button>
+                            <button type="button" id="printDocBtn" class="btn btn-outline">Print blank PDF</button>
+                            <button type="button" id="saveDocBtn" class="btn btn-primary">Submit</button>
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+        // Append to body
+        document.body.appendChild(wrapper.firstElementChild);
+        // Re-select elements
+        modal = document.getElementById('documentationModal');
+        title = document.getElementById('docModalTitle');
+        form = document.getElementById('docModalForm');
+        // Wire up close and action buttons
+        const closeEl = modal.querySelector('.close');
+        if (closeEl) closeEl.addEventListener('click', closeDocModal);
+        const cancelBtn = document.getElementById('docCancelBtn');
+        if (cancelBtn) cancelBtn.addEventListener('click', closeDocModal);
+        const saveBtn = document.getElementById('saveDocBtn');
+        if (saveBtn) saveBtn.addEventListener('click', async () => { try { await saveDocument(); } catch (e) { console.error(e); } });
+        const printBtn = document.getElementById('printDocBtn');
+        if (printBtn) printBtn.addEventListener('click', () => { try { printDocument(); } catch (e) { console.error(e); } });
+        // Run any additional page setup that assumes the modal exists
+        try { setupDocumentationPage(); } catch (e) { /* ignore */ }
+    }
     
     // Set the modal title
     const formTitles = {
@@ -358,6 +387,17 @@ function loadFormTemplate(formType) {
         console.warn('Could not inject extra spacing styles into doc modal', err);
     }
 }
+
+// Expose functions globally for inline handlers and other modules — ensure availability even if init fails.
+window.showDocModal = showDocModal;
+window.viewExistingForm = viewExistingForm;
+window.deleteExistingForm = deleteExistingForm;
+window.editExistingForm = editExistingForm;
+window.saveDocument = saveDocument;
+window.printDocument = printDocument;
+window.loadStudentForms = loadStudentForms;
+window.filterExistingForms = filterExistingForms;
+window.closeDocModal = closeDocModal;
 
 function populateFormStudentSelect() {
     const select = document.getElementById('studentName');
@@ -745,13 +785,16 @@ function _resolveFormByUid(uid) {
     // uid format: "form_type::id" where id may be db_id or id
     if (!uid || typeof uid !== 'string') return null;
     const parts = uid.split('::');
-    const formType = parts[0] || '';
+    const prefix = parts[0] || '';
     const rawId = parts.slice(1).join('::');
     // Try to find a matching form where form_type matches and id/db_id matches
     let found = existingForms.find(f => {
         const ft = f.form_type || f.formType || '';
+        const tbl = f.table || '';
         const rid = String(f.db_id || f.id || '');
-        return String(ft) === String(formType) && rid === String(rawId);
+        // Match on table when provided; otherwise on form_type
+        const typeMatches = (tbl ? String(tbl) === String(prefix) : String(ft) === String(prefix));
+        return typeMatches && rid === String(rawId);
     });
     if (found) return found;
     // fallback: try matching by db_id/id only
@@ -858,9 +901,19 @@ function viewExistingForm(formUid) {
                     }
                 };
 
+                // Populate from top-level keys
                 Object.keys(data).forEach(k => {
+                    // Skip nested objects here; we'll handle form_data specifically below
+                    if (data[k] && typeof data[k] === 'object' && k !== 'created_at') return;
                     setField(k, data[k]);
                 });
+
+                // Also populate from nested form_data if present (common when stored in content JSON)
+                if (data.form_data && typeof data.form_data === 'object') {
+                    Object.keys(data.form_data).forEach(k => {
+                        setField(k, data.form_data[k]);
+                    });
+                }
 
                 // If date inputs are present but not provided in data, use created_at
                 if (isoDate) {
@@ -944,7 +997,21 @@ function printExistingForm(formUid) {
 
     if (form.file_path) {
         // Open file in new tab and let user print from browser
-        window.open('/includes/download_document.php?id=' + encodeURIComponent(form.id), '_blank');
+        // Always include the table to avoid ambiguous ID lookups across multiple tables
+        const explicitTable = form.table || (function(ft){
+            const map = {
+                'initial_evaluation': 'initial_evaluations',
+                'initial_profile': 'initial_evaluations',
+                'goals_form': 'goals',
+                'goals': 'goals',
+                'session_report': 'session_reports',
+                'discharge_report': 'discharge_reports',
+                'other_documents': 'other_documents',
+                'uploaded_file': 'other_documents'
+            };
+            return map[String(ft||'').toLowerCase()] || 'other_documents';
+        })(form.form_type);
+        window.open(`/includes/download_document.php?id=${encodeURIComponent(form.db_id || form.id)}&table=${encodeURIComponent(explicitTable)}`, '_blank');
         return;
     }
 
@@ -1001,8 +1068,20 @@ function openFileViewer(form) {
     const deleteBtn = document.getElementById('fileViewerDelete');
     modal.querySelector('.close').addEventListener('click', () => modal.remove());
 
-    const docId = form.db_id || form.id;
-    const table = form.table || 'other_documents';
+    const docId = form.db_id || form.id; // prefer DB id when provided by server
+    const table = form.table || (function(ft){
+        const map = {
+            'initial_evaluation': 'initial_evaluations',
+            'initial_profile': 'initial_evaluations',
+            'goals_form': 'goals',
+            'goals': 'goals',
+            'session_report': 'session_reports',
+            'discharge_report': 'discharge_reports',
+            'other_documents': 'other_documents',
+            'uploaded_file': 'other_documents'
+        };
+        return map[String(ft||'').toLowerCase()] || 'other_documents';
+    })(form.form_type);
     const fileUrl = form.file_path ? '/' + form.file_path.replace(/^\//, '') : `/includes/download_document.php?id=${encodeURIComponent(docId)}&table=${table}&inline=1`;
     const printBtn = document.getElementById('fileViewerPrint');
     printBtn.addEventListener('click', () => {
@@ -1035,9 +1114,9 @@ function openFileViewer(form) {
         try {
             const fd = new FormData();
             fd.append('action', 'delete_document');
-            // Prefer explicit table + id when possible
-            const explicitTable = form.table || (form.form_type ? (function(ft){ const m={'initial_evaluation':'initial_evaluations','initial_profile':'initial_evaluations','goals_form':'goals','goals':'goals','session_report':'session_reports','discharge_report':'discharge_reports','other_documents':'other_documents','uploaded_file':'other_documents'}; return m[ft]||null;})(form.form_type) : null);
-            const numericId = (form.id && String(form.id).match(/^\d+$/)) ? String(form.id) : null;
+            // Prefer explicit table + DB row id when possible
+            const explicitTable = form.table || (form.form_type ? (function(ft){ const m={'initial_evaluation':'initial_evaluations','initial_profile':'initial_evaluations','goals_form':'goals','goals':'goals','session_report':'session_reports','discharge_report':'discharge_reports','other_documents':'other_documents','uploaded_file':'other_documents'}; return m[String(ft||'').toLowerCase()]||null;})(form.form_type) : null);
+            const numericId = (form.db_id && String(form.db_id).match(/^\d+$/)) ? String(form.db_id) : ((form.id && String(form.id).match(/^\d+$/)) ? String(form.id) : null);
             if (explicitTable && numericId) {
                 fd.append('table', explicitTable);
                 fd.append('id', numericId);
@@ -1045,7 +1124,7 @@ function openFileViewer(form) {
                 fd.append('content_id', String(form.form_data.id));
                 fd.append('form_type', form.form_type || '');
             } else {
-                fd.append('id', String(form.id));
+                fd.append('id', String(form.db_id || form.id));
             }
             // include current page student context where possible to avoid cross-student deletes
             try { const sel = document.getElementById('studentSelect'); if (sel && sel.value) fd.append('student_id', String(sel.value)); } catch(e){}
@@ -1175,6 +1254,26 @@ async function deleteExistingForm(formUid) {
     if (!sendId) return showNotification('Unable to determine id to delete', 'error');
 
     try {
+        // Snapshot existing list so we can restore if the server delete fails
+        const prevForms = Array.isArray(existingForms) ? existingForms.slice() : [];
+        // Optimistic UI: remove the item from the DOM immediately so the list stays responsive
+        try {
+            const item = document.querySelector(`.existing-form-item[data-uid="${CSS.escape(formUid)}"]`);
+            if (item) {
+                item.remove();
+                const container = document.getElementById('existingFormsContainer');
+                if (container && !container.querySelector('.existing-form-item')) {
+                    container.innerHTML = '<p class="muted">No saved forms found for this student.</p>';
+                }
+            }
+            // Also prune from the in-memory cache so filters work correctly until the refresh completes
+            existingForms = existingForms.filter(f => {
+                const ft = f.form_type || f.formType || '';
+                const rid = String(f.db_id || f.id || '');
+                return !(String(ft) + '::' + rid === formUid);
+            });
+        } catch (e) { /* non-fatal */ }
+
         const fd = new FormData();
         fd.append('action', 'delete_document');
         // Prefer to send explicit table + DB id when available to avoid ambiguous numeric-id fallbacks on the server
@@ -1208,8 +1307,19 @@ async function deleteExistingForm(formUid) {
                 fd.append('id', sendId);
             }
         }
+        // include the current student context when available to harden server-side checks
+        try {
+            const sel = document.getElementById('studentSelect');
+            if (sel && sel.value) fd.append('student_id', String(sel.value));
+        } catch (e) { /* ignore */ }
+
         const res = await fetch('/includes/submit.php', { method: 'POST', body: fd });
-        const result = await res.json();
+        let result;
+        try { result = await res.json(); } catch (e) {
+            const raw = await res.text();
+            console.error('Delete returned non-JSON response:', raw);
+            result = { success: false, message: 'Server returned an invalid response' };
+        }
         if (result && result.success) {
             showNotification('Document deleted', 'success');
             // If this was a goals form, decrement the global cached goals count so dashboard updates immediately
@@ -1219,17 +1329,26 @@ async function deleteExistingForm(formUid) {
                     if (window.SLPCache && typeof window.SLPCache.decGoals === 'function') window.SLPCache.decGoals(1);
                 }
             } catch (e) { /* ignore */ }
-            // refresh current student list
-            const sel = document.getElementById('studentSelect');
-            if (sel && sel.value) await loadStudentForms();
+            // Refresh in background to keep the list accurate (but don't block UX)
+            try {
+                const sel = document.getElementById('studentSelect');
+                if (sel && sel.value) loadStudentForms();
+            } catch (e) { /* ignore */ }
             // Refresh recent activity to reflect deletion
             try { if (typeof window.refreshRecentActivity === 'function') window.refreshRecentActivity(20); } catch (e) { /* ignore */ }
         } else {
-            const msg = result && result.message ? result.message : 'Delete failed';
+            const msg = result && (result.message || result.error) ? (result.message || result.error) : 'Delete failed';
             showNotification('Delete failed: ' + msg, 'error');
+            // If deletion failed, restore from snapshot
+            try {
+                existingForms = prevForms;
+                displayExistingForms(prevForms);
+            } catch (e) { /* ignore */ }
         }
     } catch (err) {
         console.error('Error deleting document', err);
         showNotification('Error deleting document', 'error');
+        // On error, force a refresh to restore list state
+        try { const sel = document.getElementById('studentSelect'); if (sel && sel.value) loadStudentForms(); } catch (e) { /* ignore */ }
     }
 }

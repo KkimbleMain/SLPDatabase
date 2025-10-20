@@ -100,11 +100,21 @@ if (!defined('USE_SQL')) define('USE_SQL', false);
 // Toggle server-side PDF generation. Set to true to enable server-side PDF rendering (wkhtmltopdf).
 if (!defined('PDF_ENABLED')) define('PDF_ENABLED', false);
 
+// Global toggle for report generation/export functionality. When false, server-side
+// report creation is disabled and related UI is hidden. Set to true to enable creating
+// progress reports (retrieval/deletion may still be allowed elsewhere).
+if (!defined('ALLOW_REPORTS')) define('ALLOW_REPORTS', true);
+
 // Controls the source of items shown in the Dashboard "Recent Activity" feed.
 // Options:
-//  - 'synth+log' (default): synthesize from DB tables and merge with activity_log
-//  - 'synthOnly': only synthesize from DB tables (ignore activity_log)
+//  - 'synth+log': synthesize from DB tables and merge with activity_log
+//  - 'synthOnly' (default): only synthesize from DB tables (ignore activity_log)
 //  - 'logOnly': only read from activity_log
-if (!defined('RECENT_ACTIVITY_MODE')) define('RECENT_ACTIVITY_MODE', 'synth+log');
+if (!defined('RECENT_ACTIVITY_MODE')) define('RECENT_ACTIVITY_MODE', 'synthOnly');
+
+// When true, only records explicitly owned by the logged-in user (user_id = :uid) are
+// readable/writable. When false, legacy rows with NULL user_id are also included.
+// Default to strict partitioning to prevent cross-user reads on legacy rows.
+if (!defined('OWNERSHIP_STRICT')) define('OWNERSHIP_STRICT', true);
 
 ?>

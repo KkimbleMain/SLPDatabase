@@ -28,7 +28,7 @@ if (!$id) {
 // Valid tables that can contain documents
 $validTables = ['initial_evaluations', 'session_reports', 'discharge_reports', 'other_documents', 'goals'];
 
-// If no table specified, try to find the document in all tables
+// If no table specified, try to infer from typical form types or find the document in all tables
 if (empty($table)) {
     foreach ($validTables as $t) {
         try {
@@ -69,14 +69,24 @@ try {
     // DEBUG: Log what we're retrieving
     error_log("download_document.php - Table: {$table}, ID: {$id}, Title: " . ($doc['title'] ?? 'N/A') . ", File Path: " . ($doc['file_path'] ?? 'N/A'));
     
-    // Verify user owns this student
-    if (isset($doc['student_id'])) {
-        $studentStmt = $pdo->prepare(
-            "SELECT s.id 
-             FROM students s 
-             WHERE s.id = :sid AND s.assigned_therapist = :uid"
-        );
-        $studentStmt->execute([':sid' => $doc['student_id'], ':uid' => $userId]);
+    // Verify user owns this student (prefer students.user_id when present; fall back to assigned_therapist)
+    if (isset($doc['student_id']) && $doc['student_id']) {
+        try {
+            $ti = $pdo->prepare("PRAGMA table_info('students')"); $ti->execute(); $cols = array_column($ti->fetchAll(PDO::FETCH_ASSOC),'name');
+        } catch (Throwable $e) { $cols = []; }
+        if (in_array('user_id', $cols)) {
+            $studentStmt = $pdo->prepare("SELECT id FROM students WHERE id = :sid AND user_id = :uid");
+            $studentStmt->execute([':sid' => $doc['student_id'], ':uid' => $userId]);
+        } elseif (in_array('assigned_therapist', $cols)) {
+            $studentStmt = $pdo->prepare(
+                "SELECT s.id FROM students s WHERE s.id = :sid AND s.assigned_therapist = :uid"
+            );
+            $studentStmt->execute([':sid' => $doc['student_id'], ':uid' => $userId]);
+        } else {
+            // No ownership columns; deny to avoid leakage
+            http_response_code(403);
+            die('Not authorized to access this document');
+        }
         if (!$studentStmt->fetch()) {
             http_response_code(403);
             die('Not authorized to access this document');
@@ -111,9 +121,9 @@ try {
         exit;
     }
     
-    // If no file_path, check for content or form_data (JSON forms)
+    // If no file_path, check for legacy content or form_data (JSON forms) – legacy only; new inserts don't use content
     $content = null;
-    if (!empty($doc['content'])) {
+    if (array_key_exists('content', $doc) && !empty($doc['content'])) {
         $content = $doc['content'];
     } elseif (!empty($doc['form_data'])) {
         $content = $doc['form_data'];

@@ -44,7 +44,9 @@
       <p>This is placeholder info about the SLP Database project. It helps therapists track goals and progress for their students.</p>
       <ul>
         <p>&emsp;Feature: Track progress by skill</p>
-        <p>&emsp;Feature: Generate printable progress reports</p>
+  <?php if (defined('ALLOW_REPORTS') && ALLOW_REPORTS === true): ?>
+  <p>&emsp;Feature: Generate printable progress reports</p>
+  <?php endif; ?>
         <p>&emsp;Feature: Form storage for evaluations, reports, and custom documents</p>
         <p>&emsp;Feature: Activity log and dashboard</p>
       </ul>
@@ -64,36 +66,4 @@
   </div>
 </template>
 
-<script>
-// Footer modal wiring
-document.addEventListener('click', function(e){
-  try {
-    var t = e.target;
-    if (t.matches && t.matches('.footer-container a[data-modal]')) {
-      e.preventDefault();
-      var which = t.getAttribute('data-modal');
-      var tpl = document.getElementById('tmpl-footer-' + which);
-      if (!tpl) return;
-      var frag = tpl.content.cloneNode(true);
-      // simple modal insertion
-      var container = document.createElement('div');
-      container.className = 'footer-modal-host';
-      container.appendChild(frag);
-      document.body.appendChild(container);
-      // close handlers
-      container.querySelectorAll('.close-modal, .modal-overlay').forEach(function(btn){ btn.addEventListener('click', function(){ try { container.remove(); } catch(e) { container.style.display = 'none'; } }); });
-    }
-  } catch (err) { console.warn('footer modal error', err); }
-});
-</script>
-<style>
-/* Footer modal styles (match site theme) */
-.footer-modal-host .modal { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 11000; }
-.footer-modal-host .modal-overlay { position: absolute; inset: 0; background: rgba(15,23,42,0.6); backdrop-filter: blur(3px); }
-.footer-modal-host .modal-content { position: relative; background: #fff; border-radius: 8px; box-shadow: 0 10px 30px rgba(2,6,23,0.3); max-width: 880px; width: 90%; max-height: 80vh; overflow:auto; padding: 18px; }
-.footer-modal-host .modal-content h2 { margin-top: 0; color: #0f172a; }
-.footer-modal-host .modal-content p, .footer-modal-host .modal-content ul { color: #334155; line-height:1.5; }
-.footer-modal-host .modal-content .close-modal { background:#0ea5a4;color:#fff;border:0;padding:8px 12px;border-radius:6px;cursor:pointer }
-.footer-modal-host .modal-content .close-modal:hover{ opacity:0.95 }
-@media (max-width:480px) { .footer-modal-host .modal-content { padding:12px; width: 96%; } }
-</style>
+<!-- Footer modal wiring/styles handled in global JS/CSS -->

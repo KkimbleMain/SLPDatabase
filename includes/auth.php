@@ -48,12 +48,9 @@ function getCurrentUser() {
     return $user;
 }
 
-/**
- * Check if user has specific role
- */
+// Roles removed: all users have same privileges. hasRole always returns false.
 function hasRole($role) {
-    $user = getCurrentUser();
-    return $user && $user['role'] === $role;
+    return false;
 }
 
 /**
@@ -63,7 +60,7 @@ function canAccessStudent($student_id) {
     if (!isLoggedIn()) {
         return false;
     }
-    // Prefer checking the SQLite DB when available and the students table includes assigned_therapist
+    // Prefer checking the SQLite DB when available. Use students.user_id when present, else fallback to assigned_therapist.
     try {
         if (file_exists(__DIR__ . '/sqlite.php')) {
             require_once __DIR__ . '/sqlite.php';
@@ -72,7 +69,13 @@ function canAccessStudent($student_id) {
                 $pi = $pdo->prepare("PRAGMA table_info('students')");
                 $pi->execute();
                 $cols = array_column($pi->fetchAll(PDO::FETCH_ASSOC), 'name');
-                if (in_array('assigned_therapist', $cols)) {
+                if (in_array('user_id', $cols)) {
+                    $stmt = $pdo->prepare('SELECT user_id FROM students WHERE id = :id LIMIT 1');
+                    $stmt->execute([':id' => $student_id]);
+                    $r = $stmt->fetch(PDO::FETCH_ASSOC);
+                    if ($r) return isset($r['user_id']) && (int)$r['user_id'] === (int)($_SESSION['user_id'] ?? 0);
+                    return false;
+                } elseif (in_array('assigned_therapist', $cols)) {
                     $stmt = $pdo->prepare('SELECT assigned_therapist FROM students WHERE id = :id LIMIT 1');
                     $stmt->execute([':id' => $student_id]);
                     $r = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -87,6 +90,9 @@ function canAccessStudent($student_id) {
 
     // Legacy fallback: JSON-backed findRecord may return student arrays with assigned_therapist key
     $student = findRecord('students', 'id', $student_id);
+    if ($student && isset($student['user_id'])) {
+        return ((string)$student['user_id'] === (string)($_SESSION['user_id'] ?? ''));
+    }
     return $student && isset($student['assigned_therapist']) && ((string)$student['assigned_therapist'] === (string)($_SESSION['user_id'] ?? ''));
 }
 
@@ -116,15 +122,9 @@ function requireLogin() {
     }
 }
 
-/**
- * Require specific role
- */
+// Roles removed: no-op guard retained for compatibility
 function requireRole($role) {
     requireLogin();
-    if (!hasRole($role)) {
-    header('Location: /index.php?error=access_denied');
-        exit();
-    }
 }
 
 /**

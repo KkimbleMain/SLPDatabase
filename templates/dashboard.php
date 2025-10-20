@@ -5,9 +5,17 @@ require_once __DIR__ . '/../includes/sqlite.php';
 try {
     $pdo = get_db();
 
-    if (!isset($total_students)) {
-        $total_students = (int)$pdo->query('SELECT COUNT(*) FROM students WHERE archived = 0')->fetchColumn();
-    }
+	if (!isset($total_students)) {
+		// scope by ownership for non-admins when students.user_id exists
+		$uid = $_SESSION['user_id'] ?? null;
+		try { $piS = $pdo->prepare("PRAGMA table_info('students')"); $piS->execute(); $scols = array_column($piS->fetchAll(PDO::FETCH_ASSOC),'name'); } catch (Throwable $_e) { $scols = []; }
+		if ($uid && in_array('user_id',$scols)) {
+			$st = $pdo->prepare('SELECT COUNT(*) FROM students WHERE archived = 0 AND user_id = :uid'); $st->execute([':uid'=>$uid]);
+			$total_students = (int)$st->fetchColumn();
+		} else {
+			$total_students = (int)$pdo->query('SELECT COUNT(*) FROM students WHERE archived = 0')->fetchColumn();
+		}
+	}
 
     // compute total documents across canonical tables
     if (!isset($total_documents)) {
@@ -18,8 +26,14 @@ try {
                 $pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=:tbl");
                 $pi->execute([':tbl' => $tbl]);
                 if ($pi->fetchColumn()) {
-                    $st = $pdo->prepare("SELECT COUNT(*) FROM {$tbl} t JOIN students s ON t.student_id = s.id WHERE s.archived = 0");
-                    $st->execute();
+					$uid = $_SESSION['user_id'] ?? null;
+					$where = 's.archived = 0';
+					// add ownership filter if students.user_id exists
+					try { $piS = $pdo->prepare("PRAGMA table_info('students')"); $piS->execute(); $scols = array_column($piS->fetchAll(PDO::FETCH_ASSOC),'name'); } catch (Throwable $_e) { $scols = []; }
+					if ($uid && in_array('user_id',$scols)) { $where .= ' AND s.user_id = :uid'; }
+					$st = $pdo->prepare("SELECT COUNT(*) FROM {$tbl} t JOIN students s ON t.student_id = s.id WHERE {$where}");
+					if ($uid && in_array('user_id',$scols)) { $st->bindValue(':uid',$uid, PDO::PARAM_INT); }
+					$st->execute();
                     $total_documents += (int)$st->fetchColumn();
                 }
             }
@@ -36,7 +50,12 @@ try {
 			$pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='student_reports'");
 			$pi->execute();
 			if ($pi->fetchColumn()) {
-				$st = $pdo->prepare('SELECT COUNT(*) FROM student_reports sr JOIN students s ON sr.student_id = s.id WHERE s.archived = 0');
+				$uid = $_SESSION['user_id'] ?? null;
+				$where = 's.archived = 0';
+				try { $piS = $pdo->prepare("PRAGMA table_info('students')"); $piS->execute(); $scols = array_column($piS->fetchAll(PDO::FETCH_ASSOC),'name'); } catch (Throwable $_e) { $scols = []; }
+				if ($uid && in_array('user_id',$scols)) { $where .= ' AND s.user_id = :uid'; }
+				$st = $pdo->prepare("SELECT COUNT(*) FROM student_reports sr JOIN students s ON sr.student_id = s.id WHERE {$where}");
+				if ($uid && in_array('user_id',$scols)) { $st->bindValue(':uid',$uid, PDO::PARAM_INT); }
 				$st->execute();
 				$recent_sessions = (int)$st->fetchColumn();
 			} else {
@@ -102,8 +121,11 @@ try {
 		<div class="stats-card">
 			<div class="stat-icon">📈</div>
 			<div class="stat-info">
-				<h3>Active Progress Reports</h3>
-				<div id="stat-recent-reports" class="stat-number"><?php echo $activeReports; ?></div>
+				<?php
+				$reportLabel = (defined('ALLOW_REPORTS') && ALLOW_REPORTS === true) ? 'Active Progress Reports' : 'Cumulative Records';
+				?>
+				<h3><?php echo htmlspecialchars($reportLabel); ?></h3>
+				<div id="stat-recent-reports" class="stat-number"><?php echo (int)($activeReports ?? 0); ?></div>
 			</div>
 		</div>
 
@@ -185,20 +207,34 @@ try {
 						$limit = 10;
 						$pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='progress_reports'"); $pi->execute();
 						if ($pi->fetchColumn()) {
-							$pr = $pdo->prepare('SELECT pr.*, s.first_name, s.last_name FROM progress_reports pr LEFT JOIN students s ON pr.student_id = s.id ORDER BY pr.created_at DESC LIMIT :lim');
-							$pr->bindValue(':lim', $limit, PDO::PARAM_INT); $pr->execute();
+								$uid = $_SESSION['user_id'] ?? null;
+								$join = 'FROM progress_reports pr LEFT JOIN students s ON pr.student_id = s.id';
+								$where = '';
+								try { $piS = $pdo->prepare("PRAGMA table_info('students')"); $piS->execute(); $scols = array_column($piS->fetchAll(PDO::FETCH_ASSOC),'name'); } catch (Throwable $_e) { $scols = []; }
+								if ($uid && in_array('user_id',$scols)) { $where = 'WHERE s.user_id = :uid'; }
+								$sql = "SELECT pr.*, s.first_name, s.last_name {$join} {$where} ORDER BY pr.created_at DESC LIMIT :lim";
+								$pr = $pdo->prepare($sql);
+								if ($where) { $pr->bindValue(':uid', $uid, PDO::PARAM_INT); }
+								$pr->bindValue(':lim', $limit, PDO::PARAM_INT); $pr->execute();
 							$items = $pr->fetchAll(PDO::FETCH_ASSOC);
 						} else {
 							$pi2 = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='student_reports'"); $pi2->execute();
 							if ($pi2->fetchColumn()) {
-								$rq = $pdo->prepare('SELECT sr.*, s.first_name, s.last_name FROM student_reports sr LEFT JOIN students s ON sr.student_id = s.id ORDER BY sr.updated_at DESC LIMIT :lim');
+								$uid = $_SESSION['user_id'] ?? null;
+								$join = 'FROM student_reports sr LEFT JOIN students s ON sr.student_id = s.id';
+								$where = '';
+								try { $piS = $pdo->prepare("PRAGMA table_info('students')"); $piS->execute(); $scols = array_column($piS->fetchAll(PDO::FETCH_ASSOC),'name'); } catch (Throwable $_e) { $scols = []; }
+								if ($uid && in_array('user_id',$scols)) { $where = 'WHERE s.user_id = :uid'; }
+								$sql = "SELECT sr.*, s.first_name, s.last_name {$join} {$where} ORDER BY sr.updated_at DESC LIMIT :lim";
+								$rq = $pdo->prepare($sql);
+								if ($where) { $rq->bindValue(':uid', $uid, PDO::PARAM_INT); }
 								$rq->bindValue(':lim', $limit, PDO::PARAM_INT); $rq->execute();
 								$items = $rq->fetchAll(PDO::FETCH_ASSOC);
 							}
 						}
 						if (empty($items)) { ?>
 							<div class="no-activity">
-								<p>No recent activity. Start by adding students and creating a progress report.</p>
+                				<p>No recent activity yet. Start by adding students and creating forms.</p>
 							</div>
 						<?php } else { ?>
 							<?php foreach ($items as $it) {

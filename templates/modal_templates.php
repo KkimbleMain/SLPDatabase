@@ -2,7 +2,16 @@
 require_once __DIR__ . '/../includes/sqlite.php';
 try {
     $pdo = get_db();
-    $all_students = $pdo->query('SELECT id, student_id, first_name, last_name FROM students ORDER BY last_name, first_name')->fetchAll(PDO::FETCH_ASSOC);
+    // limit student list to owned students for non-admins if user_id exists
+    $currentUserId = $_SESSION['user_id'] ?? null;
+    $pis = $pdo->prepare("PRAGMA table_info('students')"); $pis->execute(); $scols = array_column($pis->fetchAll(PDO::FETCH_ASSOC),'name');
+        if (in_array('user_id',$scols) && $currentUserId) {
+        $st = $pdo->prepare('SELECT id, student_id, first_name, last_name FROM students WHERE user_id = :uid ORDER BY last_name, first_name');
+        $st->execute([':uid'=>$currentUserId]);
+        $all_students = $st->fetchAll(PDO::FETCH_ASSOC);
+    } else {
+        $all_students = $pdo->query('SELECT id, student_id, first_name, last_name FROM students ORDER BY last_name, first_name')->fetchAll(PDO::FETCH_ASSOC);
+    }
     $all_users = $pdo->query('SELECT id, username, first_name, last_name FROM users ORDER BY first_name, last_name')->fetchAll(PDO::FETCH_ASSOC);
 } catch (Throwable $e) {
     $all_students = [];
@@ -319,13 +328,7 @@ try {
                     <label for="regPassword">Password *</label>
                     <input type="password" id="regPassword" name="password" required>
                 </div>
-                <div class="form-group">
-                    <label for="regRole">Role</label>
-                    <select id="regRole" name="role">
-                        <option value="therapist">Therapist</option>
-                        <option value="admin">Admin</option>
-                    </select>
-                </div>
+                <!-- Role selection removed: all users have the same privileges -->
                 <div class="modal-actions">
                     <button type="button" class="btn btn-outline">Cancel</button>
                     <button type="submit" class="btn btn-primary">Create Account</button>

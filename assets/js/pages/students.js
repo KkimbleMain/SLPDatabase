@@ -153,6 +153,8 @@ function escapeHtml(str) {
         .replace(/'/g, '&#039;');
 }
 
+// Claim Existing Student feature removed per security/partitioning policy. Intentionally left blank.
+
 function init() {
     // search box filtering
     const search = document.getElementById('studentSearch');
@@ -186,7 +188,7 @@ function init() {
                 section.style.display = visibleRows.length ? '' : 'none';
             });
 
-            // Show a no-results message if nothing matches
+            // Show a no-results message only when filters are applied and nothing matches
             let noResults = document.getElementById('studentsNoResults');
             const container = document.querySelector('.students-by-grade');
             if (!noResults && container) {
@@ -197,7 +199,11 @@ function init() {
                 noResults.style.display = 'none';
                 container.parentNode.insertBefore(noResults, container.nextSibling);
             }
-            if (noResults) noResults.style.display = anyVisible ? 'none' : '';
+            if (noResults) {
+                const filtersActive = (!!q) || (!!grade);
+                // Only show the no-results panel if filters are active and nothing is visible
+                noResults.style.display = (!filtersActive || anyVisible) ? 'none' : '';
+            }
         }
 
         search.addEventListener('input', applyFilters);
@@ -316,104 +322,78 @@ window.exportStudent = async function(id) {
                 }
             } catch (e) { /* non-fatal: continue with whatever chartMap we have */ }
 
-            // Build FormData so we can attach blobs for each chart (server expects chart_images JSON + optional files)
+            // Build FormData: send only JSON data URLs to minimize payload size; server will embed as data URIs
             const fdGen = new FormData();
             fdGen.append('action', 'generate_student_report');
             fdGen.append('student_id', String(id));
-            try { fdGen.append('chart_images', JSON.stringify(chartMap)); } catch (e) { /* ignore */ }
-            for (const [cid, dataUrl] of Object.entries(chartMap)) {
-                try { const blob = dataURLToBlob(dataUrl); if (blob) fdGen.append('chart_image_' + cid, blob, 'chart_' + cid + '.png'); } catch (e) { console.warn('attach blob failed for chart', cid, e); }
-            }
+            try {
+                let chartJson = JSON.stringify(chartMap || {});
+                // Safety cap: if chart JSON is too large, skip sending images and rely on server-rendered SVGs
+                if (chartJson && chartJson.length > 1500000) { // ~1.5MB
+                    console.warn('Chart payload too large; omitting chart_images to avoid request limits');
+                    chartJson = '{}';
+                }
+                fdGen.append('chart_images', chartJson);
+            } catch (e) { /* ignore */ }
 
             const resGen = await fetch('/includes/submit.php', { method: 'POST', body: fdGen, credentials: 'same-origin' });
             const gen = await resGen.json();
-            if (gen && gen.success && gen.path) {
-                const url = '/' + gen.path.replace(/^\/+/,'');
+            if (gen && gen.success && gen.html) {
+                const html = gen.html;
+                const title = gen.title || 'Printable Preview';
+                const modalFrag = document.createRange().createContextualFragment(`<div class="modal"><div class="modal-content modal-wide"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><strong>${title.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</strong><div><button class="close">&times;</button></div></div><iframe id="previewFrame" style="width:100%;height:84vh;border:1px solid #ddd;border-radius:6px;background:#fff"></iframe><div style="display:flex;justify-content:flex-end;margin-top:8px;"><button id="previewPrintBtn" class="btn btn-primary">Print</button></div></div></div>`);
+                const modalEl = insertModal(modalFrag);
+                const frame = modalEl.querySelector('#previewFrame');
                 try {
-                    // try to fetch the HTML snapshot and show it in a printable modal
-                    const resp = await fetch(url, { credentials: 'same-origin' });
-                    const html = await resp.text();
-                    const modalFrag = document.createRange().createContextualFragment(`<div class="modal"><div class="modal-content modal-wide"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><strong>Printable Preview</strong><div><button class="close">&times;</button></div></div><iframe id="previewFrame" style="width:100%;height:84vh;border:1px solid #ddd;border-radius:6px;background:#fff"></iframe><div style="display:flex;justify-content:flex-end;margin-top:8px;"><button id="previewPrintBtn" class="btn btn-primary">Print</button></div></div></div>`);
-                    const modalEl = insertModal(modalFrag);
-                    const frame = modalEl.querySelector('#previewFrame');
-                    // Use iframe.src to preserve base URL so relative resources (chart images, embedded docs) resolve correctly.
+                    // Use srcdoc when possible to avoid external fetches and preserve data URIs
+                    frame.srcdoc = html;
+                } catch (e) {
                     try {
-                        frame.src = url;
-                    } catch (e) {
-                        // Fallback to injecting the HTML when direct src assignment fails
-                        try { frame.srcdoc = html; } catch (e2) { frame.contentWindow.document.open(); frame.contentWindow.document.write(html); frame.contentWindow.document.close(); }
-                    }
-                    const prbtn = modalEl.querySelector('#previewPrintBtn');
-                    if (prbtn) prbtn.addEventListener('click', async () => {
-                        try {
-                            // If the preview contains embedded PDFs, they often have their own scroll and
-                            // do not print via iframe.print() reliably. Offer to open PDFs in new tabs
-                            // for printing instead.
-                            const doPrintPreview = () => {
-                                if (frame.contentWindow && frame.contentDocument && frame.contentDocument.readyState === 'complete') {
-                                    frame.contentWindow.focus(); frame.contentWindow.print();
-                                } else {
-                                    frame.addEventListener('load', function onload() { frame.removeEventListener('load', onload); try { frame.contentWindow.focus(); frame.contentWindow.print(); } catch (e) { showNotification('Unable to print preview', 'error'); } });
-                                }
-                            };
+                        frame.contentWindow.document.open();
+                        frame.contentWindow.document.write(html);
+                        frame.contentWindow.document.close();
+                    } catch (e2) { /* ignore */ }
+                }
+                const prbtn = modalEl.querySelector('#previewPrintBtn');
+                if (prbtn) prbtn.addEventListener('click', async () => {
+                    try {
+                        const doPrintPreview = () => {
+                            if (frame.contentWindow && frame.contentDocument && frame.contentDocument.readyState === 'complete') {
+                                frame.contentWindow.focus(); frame.contentWindow.print();
+                            } else {
+                                frame.addEventListener('load', function onload() { frame.removeEventListener('load', onload); try { frame.contentWindow.focus(); frame.contentWindow.print(); } catch (e) { showNotification('Unable to print preview', 'error'); } });
+                            }
+                        };
 
-                            let foundPdf = false;
-                            try {
-                                const doc = frame.contentDocument || (frame.contentWindow && frame.contentWindow.document);
-                                if (doc) {
-                                    const embeds = Array.from(doc.querySelectorAll('embed[type="application/pdf"], object[type="application/pdf"], iframe[src$=".pdf"]'));
-                                                    if (embeds.length) {
-                                                        foundPdf = true;
-                                                        // Ask user whether they'd like to open PDFs in new tabs for printing
-                                                        const ok = await (window.showConfirm ? window.showConfirm('This report contains embedded PDF(s) which may not print correctly from the preview. Open the PDF(s) in new tab(s) for printing? Click Cancel to print the preview anyway.') : Promise.resolve(confirm('This report contains embedded PDF(s) which may not print correctly from the preview. Open the PDF(s) in new tab(s) for printing? Click Cancel to print the preview anyway.')));
-                                                        if (ok) {
-                                            // Open each PDF in a new tab (user gesture — should not be blocked)
-                                            embeds.forEach(el => {
-                                                let src = el.getAttribute('src') || el.getAttribute('data') || el.getAttribute('href');
-                                                if (!src && el.querySelector && el.querySelector('embed')) src = el.querySelector('embed').getAttribute('src');
-                                                if (!src) return;
-                                                try {
-                                                    // Resolve relative URLs against the snapshot URL
-                                                    const abs = new URL(src, url).href;
-                                                    window.open(abs, '_blank');
-                                                } catch (e) {
-                                                    try { window.open(src, '_blank'); } catch (ee) { /* ignore */ }
-                                                }
-                                            });
-                                            return; // user opted to print PDFs separately
-                                        }
+                        // If the preview contains embedded PDFs, they may not print reliably from the iframe
+                        let foundPdf = false;
+                        try {
+                            const doc = frame.contentDocument || (frame.contentWindow && frame.contentWindow.document);
+                            if (doc) {
+                                const embeds = Array.from(doc.querySelectorAll('embed[type="application/pdf"], object[type="application/pdf"], iframe[src$=".pdf"]'));
+                                if (embeds.length) {
+                                    foundPdf = true;
+                                    const ok = await (window.showConfirm ? window.showConfirm('This report contains embedded PDF(s) which may not print correctly from the preview. Open the PDF(s) in new tab(s) for printing? Click Cancel to print the preview anyway.') : Promise.resolve(confirm('This report contains embedded PDF(s) which may not print correctly from the preview. Open the PDF(s) in new tab(s) for printing? Click Cancel to print the preview anyway.')));
+                                    if (ok) {
+                                        embeds.forEach(el => {
+                                            let src = el.getAttribute('src') || el.getAttribute('data') || el.getAttribute('href');
+                                            if (!src && el.querySelector && el.querySelector('embed')) src = el.querySelector('embed').getAttribute('src');
+                                            if (!src) return;
+                                            try { window.open(src, '_blank'); } catch (e) { /* ignore */ }
+                                        });
+                                        return; // user opted to open PDFs separately
                                     }
                                 }
-                            } catch (e) {
-                                console.warn('Could not inspect preview iframe for embedded PDFs', e);
                             }
+                        } catch (e) { console.warn('Could not inspect preview iframe for embedded PDFs', e); }
 
-                            // If no embedded PDFs or user chose to continue, print the preview iframe
-                            doPrintPreview();
-                        } catch (e) { showNotification('Unable to print preview', 'error'); }
-                    });
-                    return;
-                } catch (err) {
-                    // fallback to opening in a new tab if fetch or modal fails
-                    try { window.open(url, '_blank'); return; } catch(e) { window.open(url, '_blank'); return; }
-                }
+                        doPrintPreview();
+                    } catch (e) { showNotification('Unable to print preview', 'error'); }
+                });
+                return;
             }
 
-            // If PDF engine missing or generation failed, try saving an HTML snapshot instead
-            if (gen && gen.error && (gen.error === 'PDF engine missing' || gen.error === 'PDF generation disabled' || gen.error === 'PDF generation failed')) {
-                try {
-                    const fdSnap = new URLSearchParams(); fdSnap.append('action','save_student_report_snapshot'); fdSnap.append('student_id', String(id));
-                    const resSnap = await fetch('/includes/submit.php', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: fdSnap.toString() });
-                    const snap = await resSnap.json();
-                    if (snap && snap.success && snap.path) {
-                        const url2 = '/' + snap.path.replace(/^\/+/, '');
-                        window.open(url2, '_blank');
-                        return;
-                    }
-                    alert((snap && (snap.error || snap.message)) ? (snap.error || snap.message) : 'Could not create HTML snapshot');
-                    return;
-                } catch (se) { console.error('Snapshot failed', se); alert('Snapshot generation failed'); return; }
-            }
+            // Inline path failed; show server error if present
 
             // Generic fallback: show server error if present
             alert((gen && (gen.error || gen.message)) ? (gen.error || gen.message) : 'Student report not found or export unavailable');
@@ -513,12 +493,7 @@ window.openStudentDocs = function(id) {
                             <li>Other documents: ${counts.other_documents}</li>
                             <li>Goals forms: ${counts.goals}</li>
                         </ul>
-                        <p>
-                            <label style="display:flex;align-items:center;gap:10px;">
-                                <input type="checkbox" disabled ${hasReport ? 'checked' : ''} />
-                                <span>Active Progress Report</span>
-                            </label>
-                        </p>
+                        
                         
                         <div style="margin-top:8px">
                             <h4>Skills</h4>

@@ -13,6 +13,17 @@ if ($studentId && (!isset($studentForms) || !isset($student_report_meta))) {
             $pdo = get_db();
         }
 
+        // Enforce ownership: non-admins must own the student to load profile details
+        $currentUid = $_SESSION['user_id'] ?? null;
+        if ($currentUid) {
+            try { $ti = $pdo->prepare("PRAGMA table_info('students')"); $ti->execute(); $scols = array_column($ti->fetchAll(PDO::FETCH_ASSOC),'name'); } catch (Throwable $_e) { $scols = []; }
+            if (in_array('user_id',$scols)) {
+                $chk = $pdo->prepare('SELECT id FROM students WHERE id = :sid AND user_id = :uid');
+                $chk->execute([':sid'=>$studentId, ':uid'=>$currentUid]);
+                if (!$chk->fetch()) { echo '<div class="container"><p class="no-content">Not authorized to view this student.</p></div>'; return; }
+            }
+        }
+
         // fetch progress skills (if table exists)
         $skills = [];
         try {
@@ -32,7 +43,7 @@ if ($studentId && (!isset($studentForms) || !isset($student_report_meta))) {
                 try {
                     $pi = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=:t"); $pi->execute([':t' => $t]);
                     if (!$pi->fetchColumn()) continue;
-                    $st = $pdo->prepare("SELECT id, title, form_type, created_at, file_path, content FROM {$t} WHERE student_id = :sid ORDER BY created_at DESC");
+                    $st = $pdo->prepare("SELECT id, title, form_type, created_at, file_path FROM {$t} WHERE student_id = :sid ORDER BY created_at DESC");
                     $st->execute([':sid' => $studentId]);
                     foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $row) {
                         $studentForms[] = $row;
@@ -286,8 +297,12 @@ if ($studentId && (!isset($studentForms) || !isset($student_report_meta))) {
                 <h2 class="section-title">Progress Summary</h2>
                 <div class="progress-summary-compact">
                     <label style="display:flex;align-items:center;gap:10px;">
-                        <input type="checkbox" disabled <?php echo (!empty($has_active_report) ? 'checked' : ''); ?> />
-                        <span>Active Progress Report</span>
+                        <?php if (defined('ALLOW_REPORTS') && ALLOW_REPORTS === true): ?>
+                            <input type="checkbox" disabled <?php echo (!empty($has_active_report) ? 'checked' : ''); ?> />
+                            <span>Active Progress Report</span>
+                        <?php else: ?>
+                            <span class="muted">Progress reporting disabled</span>
+                        <?php endif; ?>
                     </label>
                     <?php if (!empty($skills)): ?>
                                 <div class="skill-titles">

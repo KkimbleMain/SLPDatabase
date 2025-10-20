@@ -4,27 +4,9 @@
 if (!isset($student)) $student = [];
 if (!isset($skills)) $skills = [];
 if (!isset($student_goals)) $student_goals = [];
-if (!isset($chart_images)) $chart_images = [];
-// If chart images weren't provided by the exporter, try to discover any saved chart image files
-// under dev/exports/report_images/ that include the skill id in the filename and use them as fallbacks.
-if (empty($chart_images)) {
-    $chart_images = [];
-    $imagesDirRel = 'dev/exports/report_images';
-    $imagesDir = __DIR__ . '/../' . $imagesDirRel;
-    if (is_dir($imagesDir)) {
-        $files = scandir($imagesDir);
-        if ($files !== false) {
-                foreach ($files as $f) {
-                if ($f === '.' || $f === '..') continue;
-                $full = $imagesDir . DIRECTORY_SEPARATOR . $f;
-                if (!is_file($full)) continue;
-                // store by filename and also parse any numeric ids appearing in the filename
-                // Prefer absolute path from web root so iframe/src and wkhtmltopdf resolve correctly
-                $chart_images[$f] = '/' . trim($imagesDirRel, '/\\') . '/' . $f;
-            }
-        }
-    }
-}
+if (!isset($chart_images) || !is_array($chart_images)) $chart_images = [];
+// Chart images are expected to be provided as data URIs via $chart_images.
+// We intentionally do not read from or persist images to disk.
 if (!isset($report_title)) $report_title = null;
 
 // Chart score mode for SVG rendering:
@@ -67,7 +49,11 @@ if (($initial_evals === null || $session_reports === null || $discharge_reports 
                 $st = $pdo->prepare('SELECT * FROM session_reports WHERE student_id = :sid ORDER BY created_at DESC');
                 $st->execute([':sid' => $student['id'] ?? 0]);
                 foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
-                    if (!empty($r['content']) && ($json = json_decode($r['content'], true))) { $session_reports[] = $json; continue; }
+                    // Prefer explicit columns; if a legacy content JSON exists, attempt to parse
+                    if (array_key_exists('content', $r) && !empty($r['content'])) {
+                        $json = json_decode($r['content'], true);
+                        if ($json) { $session_reports[] = $json; continue; }
+                    }
                     $session_reports[] = ['db_id'=>$r['id'],'created_at'=>$r['created_at'] ?? null,'form_data'=>[
                         'sessionDate'=>$r['session_date'] ?? ($r['sessionDate'] ?? null),
                         'sessionDuration'=>$r['duration_minutes'] ?? ($r['durationMinutes'] ?? null),

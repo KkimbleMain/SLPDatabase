@@ -84,18 +84,6 @@ CREATE TABLE IF NOT EXISTS goals (
 
 -- progress_updates table removed (progress reporting feature deprecated/removed)
 
--- Activity log for dashboard recent activity
-CREATE TABLE IF NOT EXISTS activity_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    type TEXT,            -- e.g., student.created, student.updated, document.created
-    user_id INTEGER,      -- actor
-    student_id INTEGER,    -- related student
-    title TEXT,
-    details TEXT,         -- optional JSON/details
-    created_at TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
-    FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
-);
 
 -- Password resets table (if used)
 CREATE TABLE IF NOT EXISTS password_resets (
@@ -111,4 +99,3 @@ CREATE TABLE IF NOT EXISTS password_resets (
 CREATE INDEX IF NOT EXISTS idx_students_assigned ON students(assigned_therapist);
 CREATE INDEX IF NOT EXISTS idx_students_archived ON students(archived);
 CREATE INDEX IF NOT EXISTS idx_goals_student ON goals(student_id);
-CREATE INDEX IF NOT EXISTS idx_activity_student ON activity_log(student_id);

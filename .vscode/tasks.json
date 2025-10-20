@@ -1,0 +1,71 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run content-column removal",
+			"type": "shell",
+			"command": "php",
+			"args": [
+				"dev/tools/remove_content_columns.php"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "PHP syntax check",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-NonInteractive",
+				"-Command",
+				"Get-ChildItem -Recurse -Filter *.php | ForEach-Object { php -l $_.FullName } | Select-String -Pattern '^(?!No syntax errors).*' -NotMatch | Out-String"
+			]
+		},
+		{
+			"label": "PHP syntax check",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-NonInteractive",
+				"-Command",
+				"Get-ChildItem -Recurse -Filter *.php | ForEach-Object { php -l $_.FullName } | ForEach-Object { $_.ToString() }"
+			]
+		},
+		{
+			"label": "PHP syntax check",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-NonInteractive",
+				"-Command",
+				"Get-ChildItem -Recurse -Filter *.php | ForEach-Object { php -l $_.FullName } | ForEach-Object { $_.ToString() }"
+			]
+		},
+		{
+			"label": "PHP syntax check",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-NonInteractive",
+				"-Command",
+				"Get-ChildItem -Recurse -Filter *.php | ForEach-Object { php -l $_.FullName } | ForEach-Object { $_.ToString() }"
+			]
+		},
+		{
+			"label": "PHP syntax check",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-NonInteractive",
+				"-Command",
+				"Get-ChildItem -Recurse -Filter *.php | ForEach-Object { php -l $_.FullName } | ForEach-Object { $_.ToString() }"
+			]
+		}
+	]
+}

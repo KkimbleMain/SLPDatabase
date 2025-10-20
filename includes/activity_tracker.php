@@ -17,24 +17,26 @@ function getRecentActivity($user_id, $limit = 10) {
     try {
         if (file_exists(__DIR__ . '/sqlite.php')) {
             require_once __DIR__ . '/sqlite.php';
-            if (function_exists('get_db')) {
-                $pdo = get_db();
-                $pi = $pdo->prepare("PRAGMA table_info('students')");
-                $pi->execute();
-                $cols = array_column($pi->fetchAll(PDO::FETCH_ASSOC), 'name');
-                if (in_array('assigned_therapist', $cols)) {
-                    $stmt = $pdo->prepare('SELECT * FROM students WHERE assigned_therapist = :uid');
-                    $stmt->execute([':uid' => $user_id]);
-                    $user_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
-                } else {
-                    $stmt = $pdo->query('SELECT * FROM students WHERE archived = 0');
-                    $user_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
-                }
+            $pdo = get_db();
+            $pi = $pdo->prepare("PRAGMA table_info('students')");
+            $pi->execute();
+            $cols = array_column($pi->fetchAll(PDO::FETCH_ASSOC), 'name');
+            if (in_array('user_id', $cols)) {
+                $stmt = $pdo->prepare('SELECT * FROM students WHERE user_id = :uid AND (archived = 0 OR archived IS NULL)');
+                $stmt->execute([':uid' => $user_id]);
+                $user_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            } elseif (in_array('assigned_therapist', $cols)) {
+                $stmt = $pdo->prepare('SELECT * FROM students WHERE assigned_therapist = :uid AND (archived = 0 OR archived IS NULL)');
+                $stmt->execute([':uid' => $user_id]);
+                $user_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            } else {
+                // No ownership column; avoid leaking all students
+                $user_students = [];
             }
         }
     } catch (\Throwable $e) {
         // fallback to legacy JSON read
-        $user_students = findRecords('students', ['assigned_therapist' => $user_id]);
+        $user_students = findRecords('students', ['user_id' => $user_id]) ?: findRecords('students', ['assigned_therapist' => $user_id]);
         if (!is_array($user_students)) $user_students = [];
     }
     $student_ids = array_column($user_students, 'id');
@@ -65,8 +67,7 @@ function getRecentActivity($user_id, $limit = 10) {
         $pdoGoals = null;
         if (file_exists(__DIR__ . '/sqlite.php')) {
             require_once __DIR__ . '/sqlite.php';
-            if (function_exists('get_db')) $pdoGoals = get_db();
-            elseif (function_exists('sqlite_get_pdo')) $pdoGoals = sqlite_get_pdo();
+            $pdoGoals = get_db();
         }
     if ($synthesize && $pdoGoals instanceof PDO) {
             $gcols = [];
@@ -136,8 +137,7 @@ function getRecentActivity($user_id, $limit = 10) {
         try {
             if (file_exists(__DIR__ . '/sqlite.php')) {
                 require_once __DIR__ . '/sqlite.php';
-                if (function_exists('get_db')) $pdo = get_db();
-                elseif (function_exists('sqlite_get_pdo')) $pdo = sqlite_get_pdo();
+                $pdo = get_db();
             }
         } catch (Throwable $e) {
             $pdo = null;
@@ -424,13 +424,9 @@ function getRecentActivity($user_id, $limit = 10) {
         }
     }
 
-    // Rebuild activities array from dedup map and sort
+    // Rebuild activities array from dedup map and sort (newest first)
     $activities = array_values($map);
     usort($activities, function($a, $b) { return ($b['timestamp'] ?? 0) - ($a['timestamp'] ?? 0); });
-
-    usort($activities, function($a, $b) {
-        return $b['timestamp'] - $a['timestamp'];
-    });
 
     // Limit results
     return array_slice($activities, 0, $limit);
@@ -442,17 +438,20 @@ function getRecentActivity($user_id, $limit = 10) {
  * Record an activity into the DB activity_log table when possible.
  */
 function record_activity($type, $student_id = null, $description = '', $meta = []) {
+    // If configured to synthesize activity only, skip writing to the activity_log table
+    try {
+        if (!defined('RECENT_ACTIVITY_MODE')) {
+            $cfg = __DIR__ . '/config.php';
+            if (file_exists($cfg)) require_once $cfg;
+        }
+        if (defined('RECENT_ACTIVITY_MODE') && RECENT_ACTIVITY_MODE === 'synthOnly') {
+            return; // no-op
+        }
+    } catch (Throwable $_e) { /* ignore and continue best-effort */ }
     try {
         if (file_exists(__DIR__ . '/sqlite.php')) {
             require_once __DIR__ . '/sqlite.php';
-            if (function_exists('get_db')) {
-                $pdo = get_db();
-            } elseif (function_exists('sqlite_get_pdo')) {
-                $pdo = sqlite_get_pdo();
-                if (!($pdo instanceof PDO)) {
-                    $pdo = null; // Ensure $pdo is null if sqlite_get_pdo() does not return a valid PDO object
-                }
-            }
+            $pdo = get_db();
             $stmt = $pdo->prepare('INSERT INTO activity_log (type, student_id, user_id, description, metadata, created_at) VALUES (:type, :student_id, :user_id, :description, :metadata, :created_at)');
             $stmt->execute([
                 ':type' => $type,
